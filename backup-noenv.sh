@@ -4,8 +4,9 @@ set -euo pipefail
 # Herald Angel public-safe source backup helper.
 #
 # Creates a NOENV source archive from the current repository directory.
-# It intentionally excludes secrets, runtime data, virtual environments,
-# Git history, caches, logs, database files, and previous backups.
+# It excludes secrets, runtime data, virtual environments, Git history,
+# caches, logs, databases, private keys, and old backups.
+# The safe public template .env.example is deliberately retained.
 #
 # Usage:
 #   ./backup-noenv.sh
@@ -15,20 +16,25 @@ PROJECT_NAME="$(basename "$BASE_DIR")"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="$BASE_DIR/backups"
 OUT="$BACKUP_DIR/${PROJECT_NAME}-NOENV-${STAMP}.tar.gz"
+TMP_TAR="$BACKUP_DIR/.${PROJECT_NAME}-NOENV-${STAMP}.tar"
 
 mkdir -p "$BACKUP_DIR"
+rm -f "$TMP_TAR" "$OUT"
+trap 'rm -f "$TMP_TAR"' EXIT
 
 cd "$BASE_DIR"
 
+# Build an uncompressed archive first. This lets us exclude every .env.* file
+# safely, then append only the known-safe .env.example template afterwards.
 tar \
   --exclude='./.env' \
   --exclude='./.env.*' \
   --exclude='./*.env' \
   --exclude='./.git' \
-  --exclude='./.github' \
   --exclude='./.venv' \
   --exclude='./venv' \
   --exclude='./env' \
+  --exclude='./.tox' \
   --exclude='./data' \
   --exclude='./logs' \
   --exclude='./backups' \
@@ -75,8 +81,18 @@ tar \
   --exclude='*/id_rsa' \
   --exclude='./id_ed25519' \
   --exclude='*/id_ed25519' \
-  -czf "$OUT" \
+  -cf "$TMP_TAR" \
   .
+
+if [[ ! -f .env.example ]]; then
+  echo "ERROR: .env.example is missing; refusing to create an incomplete source backup."
+  exit 1
+fi
+
+tar -rf "$TMP_TAR" .env.example
+gzip -n -c "$TMP_TAR" > "$OUT"
+rm -f "$TMP_TAR"
+trap - EXIT
 
 echo "Created NOENV backup:"
 echo "$OUT"
@@ -84,9 +100,28 @@ ls -lh "$OUT"
 
 echo
 echo "Checking archive for common secret/runtime patterns..."
-if tar -tzf "$OUT" | grep -Ei '(^|/)\.env($|[./])|(^|/)\.git/|(^|/)\.venv/|(^|/)venv/|(^|/)env/|(^|/)data/|(^|/)logs/|(^|/)backups/|__pycache__/|\.pyc$|\.pyo$|\.db$|\.sqlite3?$|\.log$|\.pem$|\.key$|(^|/)id_rsa$|(^|/)id_ed25519$'; then
-  echo "WARNING: backup may contain excluded secret/runtime files. Review before sharing."
+SUSPICIOUS="$({
+  tar -tzf "$OUT" \
+    | grep -Ei '(^|/)\.env($|[./])|(^|/)\.git/|(^|/)\.venv/|(^|/)venv/|(^|/)env/|(^|/)data/|(^|/)logs/|(^|/)backups/|__pycache__/|\.pyc$|\.pyo$|\.db$|\.sqlite3?$|\.log$|\.pem$|\.key$|(^|/)id_rsa$|(^|/)id_ed25519$' \
+    | grep -Ev '(^|/)\.env\.example$' \
+    || true
+})"
+
+if [[ -n "$SUSPICIOUS" ]]; then
+  printf '%s\n' "$SUSPICIOUS"
+  echo "WARNING: backup contains a secret/runtime-looking path. Archive removed."
+  rm -f "$OUT"
+  exit 1
+fi
+
+if ! tar -tzf "$OUT" | grep -Eq '(^|/)\.env\.example$'; then
+  echo "WARNING: safe public template .env.example is missing. Archive removed."
+  rm -f "$OUT"
   exit 1
 fi
 
 echo "NOENV backup check passed."
+
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum "$OUT"
+fi

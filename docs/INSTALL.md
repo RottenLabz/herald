@@ -63,6 +63,14 @@ Required settings:
     DISCORD_TOKEN=your_discord_bot_token
     OWNER_ID=your_discord_user_id
 
+For a single-server install, the default is sufficient:
+
+    HERALD_GUILD_ID=0
+
+If the bot is connected to more than one Discord server, set this to the ID of
+the one server Herald should use. Herald will otherwise refuse ambiguous alert
+delivery rather than choosing a server by list order.
+
 Recommended first-run safety settings:
 
     HERALD_DM_COMMANDS_ENABLED=true
@@ -71,27 +79,37 @@ Recommended first-run safety settings:
     HERALD_SERVER_COMMANDS_ENABLED=false
     HERALD_STARTUP_BACKLOG_MODE=held
 
+Recommended module defaults for a gaming-focused install:
+
+    FREE_GAMES_ENABLED=true
+    GPU_UPDATES_ENABLED=true
+    TWITCH_ENABLED=false
+    SECURITY_ENABLED=false
+
 ## 5. Create Discord channels
 
-Default channel names:
+Core/default channel names:
 
     #welcome
     #subscriptions
     #free-games
     #gpu-updates
+
+Create optional channels only for modules you enable:
+
     #stream-alerts
     #security-alerts
 
-You can change these names in .env.
+You can change all channel names in .env.
 
 ## 6. Optional subscription roles
 
-If you use the subscription panel, create these roles by default:
+If you use the subscription panel, create roles for the modules you enable:
 
     Free Games
     GPU Updates
-    Stream Alerts
-    Security Alerts
+    Stream Alerts      # only when Twitch is enabled
+    Security Alerts    # only when security is enabled
 
 Only use harmless notification/viewer roles.
 
@@ -115,7 +133,9 @@ A sample service file is included at:
 
     systemd/herald-angel.service.example
 
-Copy it to /etc/systemd/system/herald-angel.service, edit the paths/user, then run:
+The sample is hardened for an installation under /opt/herald-angel using a dedicated herald service account. Ensure the configured WorkingDirectory, ExecStart, ReadWritePaths, user, group, and writable data/log/backup directories all exist and match your deployment. ProtectHome=true will deliberately block a project kept under /home unless you redesign the unit.
+
+Copy it to /etc/systemd/system/herald-angel.service, review every path/user value, then run:
 
     sudo systemctl daemon-reload
     sudo systemctl enable herald-angel
@@ -150,6 +170,7 @@ Stop the service, pull changes, update dependencies if needed, then restart.
     pip install -r requirements.txt
 
     python -m py_compile config.py subscriptions.py bot.py storage.py watchers.py providers/twitch.py providers/gamerpower.py providers/guru3d.py providers/security.py
+    python -m unittest discover -s tests -v
 
     sudo systemctl start herald-angel
     sudo systemctl status herald-angel --no-pager

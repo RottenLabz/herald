@@ -1,9 +1,14 @@
 from collections.abc import Callable
 
+from config import (
+    FREE_GAMES_ENABLED,
+    GPU_UPDATES_ENABLED,
+    SECURITY_ENABLED,
+    TWITCH_ENABLED,
+)
 from storage import (
     WATCH_STATUS_HELD,
     WATCH_STATUS_PENDING,
-    WATCH_STATUS_FAILED,
     WATCH_STATUS_SKIPPED,
     count_items_by_category,
     count_items_by_status,
@@ -52,12 +57,19 @@ def safe_fetch_source(
 
 
 def fetch_all_sources_with_errors() -> tuple[dict[str, list[dict]], list[str]]:
-    provider_defs: list[tuple[str, Callable[[], list[dict]]]] = [
-        ("free_games", gamerpower.fetch_items),
-        ("gpu_updates", guru3d.fetch_items),
-        ("stream_alerts", twitch.fetch_items),
-        ("security_alerts", security.fetch_items),
-    ]
+    provider_defs: list[tuple[str, Callable[[], list[dict]]]] = []
+
+    if FREE_GAMES_ENABLED:
+        provider_defs.append(("free_games", gamerpower.fetch_items))
+
+    if GPU_UPDATES_ENABLED:
+        provider_defs.append(("gpu_updates", guru3d.fetch_items))
+
+    if TWITCH_ENABLED:
+        provider_defs.append(("stream_alerts", twitch.fetch_items))
+
+    if SECURITY_ENABLED:
+        provider_defs.append(("security_alerts", security.fetch_items))
 
     sources: dict[str, list[dict]] = {}
     errors: list[str] = []
@@ -184,6 +196,8 @@ def format_items(title: str, items: list[dict]) -> str:
 def watcher_status_text() -> str:
     return (
         "🎺 **Herald Watcher Status**\n\n"
+        f"Modules — games: `{FREE_GAMES_ENABLED}` | GPU: `{GPU_UPDATES_ENABLED}` | "
+        f"Twitch: `{TWITCH_ENABLED}` | security: `{SECURITY_ENABLED}`\n\n"
         f"Held: `{count_items_by_status('held')}`\n"
         f"Pending: `{count_items_by_status('pending')}`\n"
         f"Posted: `{count_items_by_status('posted')}`\n"
@@ -217,7 +231,8 @@ def held_items(limit: int = 10) -> list[dict]:
 
 
 def pending_items(limit: int = 10) -> list[dict]:
-    return list_items_by_status("pending", limit)
+    # Delivery is FIFO so old pending items cannot be starved by newer alerts.
+    return list_items_by_status("pending", limit, newest_first=False)
 
 
 def skip_item(item_id: int) -> bool:
@@ -233,16 +248,24 @@ def skip_items(item_ids: list[int]) -> dict:
     unique_ids = []
 
     for item_id in item_ids:
-        try:
-            item_id = int(item_id)
-        except Exception:
+        if isinstance(item_id, bool):
             continue
 
-        if item_id <= 0:
+        if isinstance(item_id, int):
+            parsed_id = item_id
+        else:
+            text = str(item_id).strip()
+
+            if not text.isdecimal():
+                continue
+
+            parsed_id = int(text)
+
+        if parsed_id <= 0:
             continue
 
-        if item_id not in unique_ids:
-            unique_ids.append(item_id)
+        if parsed_id not in unique_ids:
+            unique_ids.append(parsed_id)
 
     stats = {
         "requested": len(unique_ids),
@@ -363,8 +386,8 @@ def promote_item(item_id: int) -> bool:
     )
 
 
-def retry_failed() -> int:
-    return retry_failed_items()
+def retry_failed(max_attempts: int | None = None) -> int:
+    return retry_failed_items(max_attempts)
 
 
 def get_item(item_id: int) -> dict | None:

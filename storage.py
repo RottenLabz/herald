@@ -1,6 +1,8 @@
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,10 +34,27 @@ def _db_path() -> Path:
     return path
 
 
-def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(_db_path()))
+@contextmanager
+def connect() -> Iterator[sqlite3.Connection]:
+    conn = sqlite3.connect(str(_db_path()), timeout=30)
     conn.row_factory = sqlite3.Row
-    return conn
+    conn.execute("PRAGMA busy_timeout=30000")
+
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _begin_write(conn: sqlite3.Connection) -> None:
+    # Acquire SQLite's write reservation before reading the previous audit hash.
+    # Without this, concurrent watcher/owner writes can both inherit the same
+    # previous hash and create a forked audit chain even though every INSERT succeeds.
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
 
 
 def normalise_status(status: str) -> str:
@@ -296,9 +315,13 @@ def init_db() -> None:
             """
         )
 
+        # URL is useful as a lookup fallback for article/feed items, but it is
+        # not globally unique. Twitch channels reuse the same permanent channel
+        # URL for every new live broadcast, while the Twitch stream ID changes.
+        conn.execute("DROP INDEX IF EXISTS idx_herald_items_url")
         conn.execute(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_herald_items_url
+            CREATE INDEX IF NOT EXISTS idx_herald_items_url_lookup
             ON herald_items(url)
             WHERE url <> ''
             """
@@ -366,6 +389,7 @@ def audit_event(
     init_db()
 
     with connect() as conn:
+        _begin_write(conn)
         event_hash = _insert_audit_event(
             conn,
             event_type=event_type,
@@ -429,6 +453,7 @@ def upsert_item(item: dict, status: str = WATCH_STATUS_HELD) -> dict:
     published_at = (item.get("published_at") or "").strip()
     feed_url = (item.get("feed_url") or "").strip()
     image_url = (item.get("image_url") or "").strip()
+    dedupe_by_url = bool(item.get("dedupe_by_url", True))
     status = normalise_status(status)
 
     if not category or not source or not title or not url:
@@ -440,6 +465,7 @@ def upsert_item(item: dict, status: str = WATCH_STATUS_HELD) -> dict:
         }
 
     with connect() as conn:
+        _begin_write(conn)
         existing = None
 
         if source and external_id:
@@ -453,7 +479,7 @@ def upsert_item(item: dict, status: str = WATCH_STATUS_HELD) -> dict:
                 (source, external_id),
             ).fetchone()
 
-        if existing is None and url:
+        if existing is None and url and dedupe_by_url:
             existing = conn.execute(
                 """
                 SELECT id, status
@@ -570,19 +596,36 @@ def upsert_item(item: dict, status: str = WATCH_STATUS_HELD) -> dict:
         }
 
 
-def list_items_by_status(status: str, limit: int = 10) -> list[dict]:
+def list_items_by_status(
+    status: str,
+    limit: int = 10,
+    *,
+    newest_first: bool = True,
+) -> list[dict]:
     init_db()
     status = normalise_status(status)
+    query = (
+        """
+        SELECT *
+        FROM herald_items
+        WHERE status=?
+        ORDER BY id DESC
+        LIMIT ?
+        """
+        if newest_first
+        else
+        """
+        SELECT *
+        FROM herald_items
+        WHERE status=?
+        ORDER BY id ASC
+        LIMIT ?
+        """
+    )
 
     with connect() as conn:
         rows = conn.execute(
-            """
-            SELECT *
-            FROM herald_items
-            WHERE status=?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
+            query,
             (status, int(limit)),
         ).fetchall()
 
@@ -619,6 +662,7 @@ def set_item_status(
     status = normalise_status(status)
 
     with connect() as conn:
+        _begin_write(conn)
         existing = conn.execute(
             """
             SELECT id, status, title, source, category
@@ -671,6 +715,7 @@ def mark_item_posted(item_id: int, discord_message_id: str = "") -> bool:
     init_db()
 
     with connect() as conn:
+        _begin_write(conn)
         existing = conn.execute(
             """
             SELECT id, status, title, source, category
@@ -735,6 +780,7 @@ def mark_item_failed(item_id: int, error: str) -> bool:
         error = error[:500].rstrip() + "..."
 
     with connect() as conn:
+        _begin_write(conn)
         existing = conn.execute(
             """
             SELECT id, status, title, source, category
@@ -790,19 +836,33 @@ def mark_item_failed(item_id: int, error: str) -> bool:
         return cursor.rowcount > 0
 
 
-def retry_failed_items() -> int:
+def retry_failed_items(max_attempts: int | None = None) -> int:
     init_db()
 
     with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, status, title, source, category
-            FROM herald_items
-            WHERE status=?
-            ORDER BY id ASC
-            """,
-            (WATCH_STATUS_FAILED,),
-        ).fetchall()
+        _begin_write(conn)
+
+        if max_attempts is None:
+            rows = conn.execute(
+                """
+                SELECT id, status, title, source, category
+                FROM herald_items
+                WHERE status=?
+                ORDER BY id ASC
+                """,
+                (WATCH_STATUS_FAILED,),
+            ).fetchall()
+        else:
+            max_attempts = max(1, int(max_attempts))
+            rows = conn.execute(
+                """
+                SELECT id, status, title, source, category
+                FROM herald_items
+                WHERE status=? AND post_attempts_count < ?
+                ORDER BY id ASC
+                """,
+                (WATCH_STATUS_FAILED, max_attempts),
+            ).fetchall()
 
         changed = 0
 
@@ -873,6 +933,21 @@ def list_recent_audit_events(limit: int = 20) -> list[dict]:
             LIMIT ?
             """,
             (int(limit),),
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def list_all_audit_events() -> list[dict]:
+    init_db()
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM herald_audit_events
+            ORDER BY id DESC
+            """
         ).fetchall()
 
     return [dict(row) for row in rows]
@@ -1065,7 +1140,7 @@ def audit_recent_text(limit: int = 10) -> str:
     verification = verify_audit_chain()
 
     lines = [
-        f"🎺 **Recent Herald audit events**",
+        "🎺 **Recent Herald audit events**",
         "",
         f"Showing: `{len(events)}`",
         f"Chain: `{'PASS' if verification.get('ok') else 'FAIL'}`",
@@ -1151,7 +1226,7 @@ def audit_summary_text() -> str:
     init_db()
 
     verification = verify_audit_chain()
-    events = list_recent_audit_events(500)
+    events = list_all_audit_events()
 
     event_counts = {}
     category_counts = {}

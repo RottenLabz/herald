@@ -4,13 +4,17 @@ import discord
 
 from config import (
     FREE_GAMES_CHANNEL_NAME,
+    FREE_GAMES_ENABLED,
     GPU_UPDATES_CHANNEL_NAME,
-    STREAM_ALERTS_CHANNEL_NAME,
+    GPU_UPDATES_ENABLED,
     SECURITY_ALERTS_CHANNEL_NAME,
+    SECURITY_ENABLED,
+    STREAM_ALERTS_CHANNEL_NAME,
+    TWITCH_ENABLED,
 )
 
 
-SUBSCRIPTION_DEFS = {
+ALL_SUBSCRIPTION_DEFS = {
     "free-games": {
         "label": "Free Games",
         "role_name": "Free Games",
@@ -41,6 +45,19 @@ SUBSCRIPTION_DEFS = {
     },
 }
 
+MODULE_ENABLED = {
+    "free-games": FREE_GAMES_ENABLED,
+    "gpu-updates": GPU_UPDATES_ENABLED,
+    "stream-alerts": TWITCH_ENABLED,
+    "security-alerts": SECURITY_ENABLED,
+}
+
+SUBSCRIPTION_DEFS = {
+    key: info
+    for key, info in ALL_SUBSCRIPTION_DEFS.items()
+    if MODULE_ENABLED.get(key, False)
+}
+
 
 def _find_role(guild: discord.Guild, role_name: str) -> discord.Role | None:
     return discord.utils.get(guild.roles, name=role_name)
@@ -63,6 +80,12 @@ def make_subscription_embed(guild: discord.Guild | None = None) -> discord.Embed
         ),
         color=0xD4AF37,
     )
+
+    if not SUBSCRIPTION_DEFS:
+        embed.description = (
+            "No alert modules are currently enabled. "
+            "The server owner can enable modules in Herald's .env file."
+        )
 
     for info in SUBSCRIPTION_DEFS.values():
         channel_text = f"#{info['channel_name']}"
@@ -87,6 +110,10 @@ def make_subscription_embed(guild: discord.Guild | None = None) -> discord.Embed
 def member_subscription_text(member: discord.Member) -> str:
     lines = ["🎺 **Your Herald subscriptions**", ""]
 
+    if not SUBSCRIPTION_DEFS:
+        lines.append("No alert modules are currently enabled.")
+        return "\n".join(lines)
+
     for info in SUBSCRIPTION_DEFS.values():
         role = _find_role(member.guild, info["role_name"])
         has_role = bool(role and role in member.roles)
@@ -98,7 +125,7 @@ def member_subscription_text(member: discord.Member) -> str:
 
 class SubscriptionButton(discord.ui.Button):
     def __init__(self, sub_key: str):
-        info = SUBSCRIPTION_DEFS[sub_key]
+        info = ALL_SUBSCRIPTION_DEFS[sub_key]
 
         super().__init__(
             label=info["label"],
@@ -117,7 +144,14 @@ class SubscriptionButton(discord.ui.Button):
             )
             return
 
-        info = SUBSCRIPTION_DEFS[self.sub_key]
+        if not MODULE_ENABLED.get(self.sub_key, False):
+            await interaction.response.send_message(
+                "🎺 That Herald alert module is currently disabled by the server owner.",
+                ephemeral=True,
+            )
+            return
+
+        info = ALL_SUBSCRIPTION_DEFS[self.sub_key]
         role = _find_role(interaction.guild, info["role_name"])
 
         if role is None:
@@ -208,11 +242,12 @@ class ShowMySubscriptionsButton(discord.ui.Button):
 
 
 class SubscriptionView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, *, register_all: bool = False):
         super().__init__(timeout=None)
 
-        self.add_item(SubscriptionButton("free-games"))
-        self.add_item(SubscriptionButton("gpu-updates"))
-        self.add_item(SubscriptionButton("stream-alerts"))
-        self.add_item(SubscriptionButton("security-alerts"))
+        definitions = ALL_SUBSCRIPTION_DEFS if register_all else SUBSCRIPTION_DEFS
+
+        for sub_key in definitions:
+            self.add_item(SubscriptionButton(sub_key))
+
         self.add_item(ShowMySubscriptionsButton())

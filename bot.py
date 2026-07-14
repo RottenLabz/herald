@@ -14,6 +14,7 @@ from subscriptions import (
 from config import (
     DISCORD_TOKEN,
     OWNER_ID,
+    HERALD_GUILD_ID,
     HERALD_NAME,
     HERALD_COMMAND_PREFIX,
     HERALD_DM_COMMANDS_ENABLED,
@@ -25,13 +26,18 @@ from config import (
     HERALD_CHECK_SECONDS,
     HERALD_STARTUP_BACKLOG_MODE,
     HERALD_POST_BATCH_LIMIT,
+    HERALD_DELIVERY_MAX_ATTEMPTS,
     WELCOME_ENABLED,
     WELCOME_CHANNEL_NAME,
     SUBSCRIPTIONS_CHANNEL_NAME,
     FREE_GAMES_CHANNEL_NAME,
+    FREE_GAMES_ENABLED,
     GPU_UPDATES_CHANNEL_NAME,
+    GPU_UPDATES_ENABLED,
     STREAM_ALERTS_CHANNEL_NAME,
     SECURITY_ALERTS_CHANNEL_NAME,
+    SECURITY_ENABLED,
+    TWITCH_ENABLED,
     TWITCH_PING_ROLE_ENABLED,
     TWITCH_PING_ROLE_NAME,
 )
@@ -62,20 +68,12 @@ from watchers import (
     posted_items_text,
     promote_item,
     retry_failed,
-    skip_item,
     skip_items,
     skip_range,
     skip_held_items,
     startup_mode_to_status,
     watcher_status_text,
 )
-
-
-if not DISCORD_TOKEN:
-    raise RuntimeError("DISCORD_TOKEN is missing. Check ~/herald-angel/.env")
-
-if OWNER_ID <= 0:
-    raise RuntimeError("OWNER_ID is missing or invalid. Check ~/herald-angel/.env")
 
 
 intents = discord.Intents.default()
@@ -85,6 +83,7 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 watcher_loop_started = False
+persistent_view_registered = False
 
 WATCHER_RUNTIME = {
     "running": False,
@@ -92,6 +91,7 @@ WATCHER_RUNTIME = {
     "last_poll": "",
     "last_success": "",
     "last_error": "",
+    "last_provider_errors": [],
     "last_discovery": {},
     "last_delivery": {},
 }
@@ -147,11 +147,29 @@ def find_text_channel_by_name(guild: discord.Guild, name: str):
     return None
 
 
-def first_guild() -> discord.Guild | None:
-    if not client.guilds:
-        return None
+def configured_guild() -> discord.Guild | None:
+    if HERALD_GUILD_ID > 0:
+        return client.get_guild(HERALD_GUILD_ID)
 
-    return client.guilds[0]
+    if len(client.guilds) == 1:
+        return client.guilds[0]
+
+    return None
+
+
+def configured_guild_error() -> str:
+    if not client.guilds:
+        return "I am not connected to any Discord server yet."
+
+    if HERALD_GUILD_ID > 0:
+        return (
+            f"Configured HERALD_GUILD_ID `{HERALD_GUILD_ID}` is not currently available."
+        )
+
+    return (
+        "I am connected to more than one server. Set HERALD_GUILD_ID in .env "
+        "so alerts cannot be posted to the wrong server."
+    )
 
 
 async def post_subscription_panel(target_channel: discord.TextChannel) -> None:
@@ -181,7 +199,15 @@ async def post_welcome_for_member(
         return False, f"Welcome channel #{WELCOME_CHANNEL_NAME} not found in {member.guild.name}."
 
     try:
-        await channel.send(build_welcome_message(member))
+        await channel.send(
+            build_welcome_message(member),
+            allowed_mentions=discord.AllowedMentions(
+                everyone=False,
+                users=[member],
+                roles=False,
+                replied_user=False,
+            ),
+        )
 
         log_event(
             event_type,
@@ -250,8 +276,8 @@ async def clean_dm_messages(message: discord.Message, limit: int = DM_CLEAN_DEFA
     try:
         await asyncio.sleep(5)
         await confirmation.delete()
-    except Exception:
-        pass
+    except discord.HTTPException:
+        return
 
 async def send_long(channel, text: str):
     text = text or ""
@@ -497,37 +523,40 @@ def target_channel_name_for_item(item: dict) -> str:
 
     return ""
 
-def find_role_by_name(role_name: str) -> discord.Role | None:
+def find_role_by_name(
+    guild: discord.Guild,
+    role_name: str,
+) -> discord.Role | None:
     wanted = (role_name or "").strip().lower()
 
     if not wanted:
         return None
 
-    for guild in client.guilds:
-        role = discord.utils.get(guild.roles, name=role_name)
-
-        if role:
+    for role in guild.roles:
+        if role.name.lower() == wanted:
             return role
-
-        for candidate in guild.roles:
-            if candidate.name.lower() == wanted:
-                return candidate
 
     return None
 
 
-def find_role_mention_by_name(role_name: str) -> str:
-    role = find_role_by_name(role_name)
+def find_role_mention_by_name(
+    guild: discord.Guild,
+    role_name: str,
+) -> str:
+    role = find_role_by_name(guild, role_name)
     return role.mention if role else ""
 
 
-def allowed_mentions_for_item(item: dict) -> discord.AllowedMentions:
+def allowed_mentions_for_item(
+    item: dict,
+    guild: discord.Guild,
+) -> discord.AllowedMentions:
     category = (item.get("category") or "").strip().lower()
 
     # Only Twitch stream alerts may intentionally ping the configured alert role.
-    # Do not allow arbitrary role mentions from provider-controlled stream titles.
+    # Resolve the role inside the same guild as the destination channel.
     if category == "stream_alerts" and TWITCH_PING_ROLE_ENABLED:
-        role = find_role_by_name(TWITCH_PING_ROLE_NAME)
+        role = find_role_by_name(guild, TWITCH_PING_ROLE_NAME)
 
         if role:
             return discord.AllowedMentions(
@@ -539,8 +568,10 @@ def allowed_mentions_for_item(item: dict) -> discord.AllowedMentions:
 
     return discord.AllowedMentions.none()
 
-
-def build_post_payload_for_item(item: dict) -> tuple[str, discord.Embed]:
+def build_post_payload_for_item(
+    item: dict,
+    guild: discord.Guild,
+) -> tuple[str, discord.Embed]:
     item = sanitized_item_for_post(item)
     category = (item.get("category") or "").strip().lower()
     title = item.get("title") or "Herald item"
@@ -564,7 +595,7 @@ def build_post_payload_for_item(item: dict) -> tuple[str, discord.Embed]:
         role_mention = ""
 
         if TWITCH_PING_ROLE_ENABLED:
-            role_mention = find_role_mention_by_name(TWITCH_PING_ROLE_NAME)
+            role_mention = find_role_mention_by_name(guild, TWITCH_PING_ROLE_NAME)
 
         prefix = f"{role_mention}\n" if role_mention else ""
 
@@ -602,24 +633,23 @@ async def post_item_to_discord(item: dict) -> tuple[bool, str]:
     if not channel_name:
         return False, f"No target channel configured for category `{item.get('category')}`."
 
-    target_channel = None
+    guild = configured_guild()
 
-    for guild in client.guilds:
-        target_channel = find_text_channel_by_name(guild, channel_name)
+    if guild is None:
+        return False, configured_guild_error()
 
-        if target_channel is not None:
-            break
+    target_channel = find_text_channel_by_name(guild, channel_name)
 
     if target_channel is None:
         return False, f"Could not find target channel `#{channel_name}`."
 
-    content, embed = build_post_payload_for_item(item)
+    content, embed = build_post_payload_for_item(item, target_channel.guild)
 
     try:
         sent = await target_channel.send(
             content=content[:1900],
             embed=embed,
-            allowed_mentions=allowed_mentions_for_item(item),
+            allowed_mentions=allowed_mentions_for_item(item, target_channel.guild),
         )
         return True, str(sent.id)
 
@@ -720,11 +750,23 @@ async def run_watcher_cycle(first_run: bool = False) -> dict:
 
     discovery = await asyncio.to_thread(discover_items, queue_status)
     WATCHER_RUNTIME["last_discovery"] = discovery
+    WATCHER_RUNTIME["last_provider_errors"] = list(discovery.get("errors") or [])
 
-    delivery = {"checked": 0, "posted": 0, "failed": 0, "missing": 0}
+    delivery = {
+        "checked": 0,
+        "posted": 0,
+        "failed": 0,
+        "missing": 0,
+        "requeued": 0,
+    }
 
     if HERALD_AUTO_POST_ENABLED:
+        requeued = await asyncio.to_thread(
+            retry_failed,
+            HERALD_DELIVERY_MAX_ATTEMPTS,
+        )
         delivery = await deliver_pending_items_once(HERALD_POST_BATCH_LIMIT)
+        delivery["requeued"] = requeued
 
     WATCHER_RUNTIME["last_delivery"] = delivery
 
@@ -751,10 +793,19 @@ async def run_watchers_loop():
             WATCHER_RUNTIME["last_error"] = ""
             WATCHER_RUNTIME["first_run_complete"] = True
 
+            provider_errors = WATCHER_RUNTIME.get("last_provider_errors") or []
+
+            if provider_errors:
+                print(
+                    "Herald provider errors: " + " | ".join(provider_errors[:5]),
+                    flush=True,
+                )
+
             print(
                 "Herald watcher cycle complete: "
                 f"queue={result.get('queue_status')} "
                 f"created={result.get('discovery', {}).get('created', 0)} "
+                f"requeued={result.get('delivery', {}).get('requeued', 0)} "
                 f"posted={result.get('delivery', {}).get('posted', 0)} "
                 f"failed={result.get('delivery', {}).get('failed', 0)}",
                 flush=True,
@@ -774,6 +825,8 @@ async def run_watchers_loop():
 def runtime_status_text() -> str:
     discovery = WATCHER_RUNTIME.get("last_discovery") or {}
     delivery = WATCHER_RUNTIME.get("last_delivery") or {}
+    provider_errors = WATCHER_RUNTIME.get("last_provider_errors") or []
+    provider_error_text = " | ".join(provider_errors[:3]) if provider_errors else "none"
 
     return (
         f"{emoji('herald')} **Herald Runtime**\n\n"
@@ -784,9 +837,11 @@ def runtime_status_text() -> str:
         f"First run complete: `{WATCHER_RUNTIME.get('first_run_complete')}`\n"
         f"Last poll: `{WATCHER_RUNTIME.get('last_poll') or 'never'}`\n"
         f"Last success: `{WATCHER_RUNTIME.get('last_success') or 'never'}`\n"
-        f"Last error: `{WATCHER_RUNTIME.get('last_error') or 'none'}`\n\n"
+        f"Last error: `{WATCHER_RUNTIME.get('last_error') or 'none'}`\n"
+        f"Last provider errors: `{provider_error_text}`\n\n"
         f"Last discovery created: `{discovery.get('created', 0)}`\n"
         f"Last discovery existing: `{discovery.get('existing', 0)}`\n"
+        f"Last delivery requeued: `{delivery.get('requeued', 0)}`\n"
         f"Last delivery checked: `{delivery.get('checked', 0)}`\n"
         f"Last delivery posted: `{delivery.get('posted', 0)}`\n"
         f"Last delivery failed: `{delivery.get('failed', 0)}`"
@@ -795,21 +850,29 @@ def runtime_status_text() -> str:
 
 async def handle_status(message: discord.Message):
     guild_names = ", ".join(guild.name for guild in client.guilds) or "none"
+    target_guild = configured_guild()
+    target_guild_text = (
+        f"{target_guild.name} (`{target_guild.id}`)"
+        if target_guild
+        else f"unresolved — {configured_guild_error()}"
+    )
 
     reply = (
         f"{emoji('herald')} **{HERALD_NAME} Status**\n\n"
         f"Online: `yes`\n"
         f"Guilds: `{len(client.guilds)}` — {guild_names}\n"
+        f"Target guild: {target_guild_text}\n"
+        f"Configured guild ID: `{HERALD_GUILD_ID or 'automatic-single-guild'}`\n"
         f"Owner-only: `{HERALD_OWNER_ONLY}`\n"
         f"DM commands: `{HERALD_DM_COMMANDS_ENABLED}`\n"
         f"Server commands: `{HERALD_SERVER_COMMANDS_ENABLED}`\n"
         f"Welcome enabled: `{WELCOME_ENABLED}`\n"
         f"Welcome channel: `#{WELCOME_CHANNEL_NAME}`\n\n"
-        f"Channels:\n"
-        f"- Free games: `#{FREE_GAMES_CHANNEL_NAME}`\n"
-        f"- GPU updates: `#{GPU_UPDATES_CHANNEL_NAME}`\n"
-        f"- Stream alerts: `#{STREAM_ALERTS_CHANNEL_NAME}`\n"
-        f"- Security alerts: `#{SECURITY_ALERTS_CHANNEL_NAME}`\n\n"
+        f"Modules / channels:\n"
+        f"- Free games: `{FREE_GAMES_ENABLED}` — `#{FREE_GAMES_CHANNEL_NAME}`\n"
+        f"- GPU updates: `{GPU_UPDATES_ENABLED}` — `#{GPU_UPDATES_CHANNEL_NAME}`\n"
+        f"- Twitch alerts: `{TWITCH_ENABLED}` — `#{STREAM_ALERTS_CHANNEL_NAME}`\n"
+        f"- Security alerts: `{SECURITY_ENABLED}` — `#{SECURITY_ALERTS_CHANNEL_NAME}`\n\n"
         f"DB events logged: `{count_events()}`\n"
         f"Audit events logged: `{count_audit_events()}`\n"
         f"Held items: `{count_items_by_status('held')}`\n"
@@ -834,7 +897,7 @@ async def handle_help(message: discord.Message):
         f"`{HERALD_COMMAND_PREFIX} watch status`\n"
         "Show watcher outbox counts.\n\n"
         f"`{HERALD_COMMAND_PREFIX} discover`\n"
-        "Fetch GamerPower and Guru3D sources, then hold new items for review.\n\n"
+        "Fetch all enabled providers, then hold new items for review (live Twitch alerts remain time-sensitive).\n\n"
         f"`{HERALD_COMMAND_PREFIX} run once`\n"
         "Run one normal watcher cycle. New discoveries become pending and pending items auto-post if enabled.\n\n"
         f"`{HERALD_COMMAND_PREFIX} deliver pending`\n"
@@ -866,7 +929,7 @@ async def handle_help(message: discord.Message):
         f"`{HERALD_COMMAND_PREFIX} skip held all`\n"
         "Skip all held items, up to the safety limit.\n\n"
         f"`{HERALD_COMMAND_PREFIX} retry failed`\n"
-        "Move failed items back to pending.\n\n"
+        "Manually move all failed items back to pending, including items at the automatic retry cap.\n\n"
         f"`{HERALD_COMMAND_PREFIX} audit verify`\n"
         "Verify the Herald append-only audit hash chain.\n\n"
         f"`{HERALD_COMMAND_PREFIX} audit recent [number]`\n"
@@ -900,10 +963,12 @@ def parse_many_ids(parts: list[str]) -> list[int]:
     ids = []
 
     for part in parts:
-        try:
-            item_id = int(part)
-        except Exception:
+        text = str(part).strip()
+
+        if not text.isdecimal():
             continue
+
+        item_id = int(text)
 
         if item_id > 0:
             ids.append(item_id)
@@ -1006,10 +1071,10 @@ async def handle_owner_command(message: discord.Message, body: str):
         return
 
     if body_lower in {"welcome test", "test welcome"}:
-        guild = first_guild()
+        guild = configured_guild()
 
         if guild is None:
-            await send_long(message.channel, "⚠️ I am not connected to any server yet.")
+            await send_long(message.channel, f"⚠️ {configured_guild_error()}")
             return
 
         member = guild.get_member(message.author.id) or guild.me
@@ -1042,10 +1107,10 @@ async def handle_owner_command(message: discord.Message, body: str):
         "subscriptions panel",
         "post subscriptions",
     }:
-        guild = first_guild()
+        guild = configured_guild()
 
         if guild is None:
-            await send_long(message.channel, "⚠️ I am not connected to any server yet.")
+            await send_long(message.channel, f"⚠️ {configured_guild_error()}")
             return
 
         target = find_text_channel_by_name(guild, SUBSCRIPTIONS_CHANNEL_NAME)
@@ -1091,6 +1156,7 @@ async def handle_owner_command(message: discord.Message, body: str):
                     f"Seen: `{discovery.get('seen', 0)}`\n"
                     f"Created: `{discovery.get('created', 0)}`\n"
                     f"Existing: `{discovery.get('existing', 0)}`\n"
+                    f"Failed items requeued: `{delivery.get('requeued', 0)}`\n"
                     f"Delivery checked: `{delivery.get('checked', 0)}`\n"
                     f"Posted: `{delivery.get('posted', 0)}`\n"
                     f"Failed: `{delivery.get('failed', 0)}`"
@@ -1313,10 +1379,13 @@ async def handle_owner_command(message: discord.Message, body: str):
 
 @client.event
 async def on_ready():
-    global watcher_loop_started
+    global persistent_view_registered, watcher_loop_started
 
     init_db()
-    client.add_view(SubscriptionView())
+
+    if not persistent_view_registered:
+        client.add_view(SubscriptionView(register_all=True))
+        persistent_view_registered = True
 
     print(
         f"{HERALD_NAME} logged in as {client.user} "
@@ -1331,12 +1400,17 @@ async def on_ready():
 
     if not watcher_loop_started:
         watcher_loop_started = True
-        client.loop.create_task(run_watchers_loop())
+        asyncio.create_task(run_watchers_loop())
         print("Herald watcher loop task created.", flush=True)
 
 
 @client.event
 async def on_member_join(member: discord.Member):
+    guild = configured_guild()
+
+    if guild is None or member.guild.id != guild.id:
+        return
+
     ok, detail = await post_welcome_for_member(
         member,
         event_type="member_join_welcome",
@@ -1402,4 +1476,15 @@ async def on_message(message: discord.Message):
     await handle_owner_command(message, body)
 
 
-client.run(DISCORD_TOKEN)
+def main() -> None:
+    if not DISCORD_TOKEN:
+        raise RuntimeError("DISCORD_TOKEN is missing. Check the project .env file")
+
+    if OWNER_ID <= 0:
+        raise RuntimeError("OWNER_ID is missing or invalid. Check the project .env file")
+
+    client.run(DISCORD_TOKEN)
+
+
+if __name__ == "__main__":
+    main()

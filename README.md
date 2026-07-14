@@ -12,12 +12,14 @@ Herald Angel is intended for self-hosting. It is not currently offered as a host
 - Free game alerts via GamerPower API/RSS.
 - GPU driver/update alerts via Guru3D RSS.
 - Twitch live alerts via Twitch Helix.
-- Security alerts via RSS feeds.
+- Optional security alerts via RSS feeds.
 - Subscription role panel with Discord buttons.
 - Owner-only DM command controls.
 - Outbox-style item queue with held, pending, posted, failed, and skipped states.
 - SQLite local storage.
 - Local append-only-style audit trail with hash-chain verification.
+- Module toggles for free games, GPU updates, Twitch, and security feeds.
+- Optional target-guild pinning with fail-closed multi-server behaviour.
 - Public-safe default configuration.
 - NOENV backup helper script.
 
@@ -32,6 +34,8 @@ Herald Angel is designed with conservative defaults for public self-hosting:
 - Provider-controlled text is sanitised before posting to Discord.
 - Feed/API posts do not allow @everyone, user mentions, or arbitrary role mentions.
 - Twitch role pings are limited to the configured stream-alert role.
+- If connected to multiple servers, Herald requires an explicit target guild
+  instead of guessing where alerts should be posted.
 
 ## Requirements
 
@@ -40,6 +44,7 @@ Herald Angel is designed with conservative defaults for public self-hosting:
 - A Discord server where you can invite/manage the bot.
 - SQLite, included with Python on most systems.
 - Optional: Twitch developer app credentials for Twitch live alerts.
+- Optional: security RSS feeds and a security alert channel.
 
 ## Recommended hosting
 
@@ -139,6 +144,12 @@ Important settings include:
     HERALD_DM_COMMANDS_ENABLED=true
     HERALD_OWNER_ONLY=true
     HERALD_SERVER_COMMANDS_ENABLED=false
+    HERALD_GUILD_ID=0
+
+    FREE_GAMES_ENABLED=true
+    GPU_UPDATES_ENABLED=true
+    TWITCH_ENABLED=false
+    SECURITY_ENABLED=false
 
     FREE_GAMES_CHANNEL_NAME=free-games
     GPU_UPDATES_CHANNEL_NAME=gpu-updates
@@ -182,7 +193,7 @@ Herald Angel can integrate with public APIs/RSS feeds and Discord services, incl
 - GamerPower, for free game giveaway data.
 - Guru3D, for GPU driver/update RSS items.
 - Twitch, via Twitch Helix, when Twitch alerts are enabled.
-- Public security RSS feeds such as CISA, BleepingComputer, and UK NCSC, depending on configuration.
+- Public security RSS feeds such as CISA, BleepingComputer, and UK NCSC, only when the optional security module is enabled.
 
 Herald Angel is an independent self-hosted project and is not affiliated with, endorsed by, or sponsored by Discord, GamerPower, Guru3D, Twitch, CISA, BleepingComputer, UK NCSC, or any other feed/source provider.
 

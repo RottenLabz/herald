@@ -37,6 +37,17 @@ Recommended defaults:
 
 This keeps Herald controlled through owner DMs and avoids normal server-channel command use.
 
+## Server targeting safety
+
+For a normal single-server install:
+
+    HERALD_GUILD_ID=0
+
+If the bot is connected to more than one Discord server, set
+`HERALD_GUILD_ID` to the intended server. Herald then scopes alert channels,
+subscription panels, role pings, and welcome tests to that server. Without an
+explicit target in a multi-server connection, delivery fails closed.
+
 ## Mention safety
 
 Herald sanitises provider-controlled text before posting.

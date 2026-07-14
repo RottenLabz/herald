@@ -34,6 +34,7 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 DISCORD_TOKEN = env_str("DISCORD_TOKEN")
 OWNER_ID = env_int("OWNER_ID", 0)
+HERALD_GUILD_ID = env_int("HERALD_GUILD_ID", 0)
 
 HERALD_NAME = env_str("HERALD_NAME", "Herald Angel")
 HERALD_COMMAND_PREFIX = env_str("HERALD_COMMAND_PREFIX", "herald").lower()
@@ -65,10 +66,17 @@ HERALD_EMOJIS = {
 
 # Watcher settings
 HERALD_AUTO_POST_ENABLED = env_bool("HERALD_AUTO_POST_ENABLED", True)
-HERALD_CHECK_SECONDS = env_int("HERALD_CHECK_SECONDS", 3600)
+HERALD_CHECK_SECONDS = max(60, min(env_int("HERALD_CHECK_SECONDS", 3600), 86400))
 HERALD_STARTUP_BACKLOG_MODE = env_str("HERALD_STARTUP_BACKLOG_MODE", "held").lower()
-HERALD_POST_BATCH_LIMIT = env_int("HERALD_POST_BATCH_LIMIT", 10)
-HERALD_DELIVERY_MAX_ATTEMPTS = env_int("HERALD_DELIVERY_MAX_ATTEMPTS", 5)
+HERALD_POST_BATCH_LIMIT = max(1, min(env_int("HERALD_POST_BATCH_LIMIT", 10), 100))
+HERALD_DELIVERY_MAX_ATTEMPTS = max(1, min(env_int("HERALD_DELIVERY_MAX_ATTEMPTS", 5), 20))
+
+# Provider modules. Gaming modules stay enabled by default. Security remains
+# enabled for backwards compatibility with v0.1.0 installs, while the new
+# public .env.example disables it so fresh gaming-focused installs can opt in.
+FREE_GAMES_ENABLED = env_bool("FREE_GAMES_ENABLED", True)
+GPU_UPDATES_ENABLED = env_bool("GPU_UPDATES_ENABLED", True)
+SECURITY_ENABLED = env_bool("SECURITY_ENABLED", True)
 
 GAMERPOWER_API_URL = env_str(
     "GAMERPOWER_API_URL",

@@ -1,5 +1,4 @@
 import time
-from urllib.parse import urlencode
 
 import requests
 
@@ -14,8 +13,9 @@ from config import (
 )
 
 
+TWITCH_MAX_CHANNELS_PER_REQUEST = 100
+
 _TOKEN_CACHE = {
-    "access_token": "",
     "expires_at": 0,
 }
 
@@ -24,9 +24,16 @@ def _now() -> int:
     return int(time.time())
 
 
+def _clear_token_cache() -> None:
+    _TOKEN_CACHE.pop("access_token", None)
+    _TOKEN_CACHE["expires_at"] = 0
+
+
 def _get_app_access_token() -> str:
-    if _TOKEN_CACHE["access_token"] and _TOKEN_CACHE["expires_at"] > _now() + 60:
-        return _TOKEN_CACHE["access_token"]
+    cached_token = str(_TOKEN_CACHE.get("access_token") or "")
+
+    if cached_token and _TOKEN_CACHE["expires_at"] > _now() + 60:
+        return cached_token
 
     if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
         raise RuntimeError("TWITCH_CLIENT_ID or TWITCH_CLIENT_SECRET is missing")
@@ -47,6 +54,9 @@ def _get_app_access_token() -> str:
 
     payload = response.json()
 
+    if not isinstance(payload, dict):
+        raise RuntimeError("Twitch returned an invalid token response")
+
     access_token = str(payload.get("access_token") or "").strip()
     expires_in = int(payload.get("expires_in") or 0)
 
@@ -54,7 +64,7 @@ def _get_app_access_token() -> str:
         raise RuntimeError("Twitch returned an empty access token")
 
     _TOKEN_CACHE["access_token"] = access_token
-    _TOKEN_CACHE["expires_at"] = _now() + max(expires_in, 300)
+    _TOKEN_CACHE["expires_at"] = _now() + max(expires_in, 0)
 
     return access_token
 
@@ -95,6 +105,55 @@ def _make_summary(stream: dict) -> str:
     return " | ".join(parts)
 
 
+def _channel_batches(channels: list[str]) -> list[list[str]]:
+    return [
+        channels[index:index + TWITCH_MAX_CHANNELS_PER_REQUEST]
+        for index in range(0, len(channels), TWITCH_MAX_CHANNELS_PER_REQUEST)
+    ]
+
+
+def _get_streams_response(channels: list[str], token: str) -> requests.Response:
+    params = [("user_login", channel) for channel in channels]
+    params.append(("first", str(TWITCH_MAX_CHANNELS_PER_REQUEST)))
+
+    return requests.get(
+        TWITCH_STREAMS_URL,
+        params=params,
+        timeout=30,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Client-Id": TWITCH_CLIENT_ID,
+            "User-Agent": TWITCH_USER_AGENT,
+        },
+    )
+
+
+def _fetch_stream_batch(channels: list[str], token: str) -> tuple[list[dict], str]:
+    response = _get_streams_response(channels, token)
+
+    # Twitch recommends reacting to a 401 because tokens can become invalid
+    # before their advertised expiry. App tokens cannot be refreshed, so obtain
+    # a new app token and retry this batch once.
+    if response.status_code == 401:
+        _clear_token_cache()
+        token = _get_app_access_token()
+        response = _get_streams_response(channels, token)
+
+    response.raise_for_status()
+
+    payload = response.json()
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("Twitch returned an invalid streams response")
+
+    streams = payload.get("data") or []
+
+    if not isinstance(streams, list):
+        raise RuntimeError("Twitch returned a non-list streams payload")
+
+    return streams, token
+
+
 def fetch_items() -> list[dict]:
     if not TWITCH_ENABLED:
         return []
@@ -105,28 +164,11 @@ def fetch_items() -> list[dict]:
         return []
 
     token = _get_app_access_token()
+    streams = []
 
-    query = urlencode(
-        [("user_login", channel) for channel in channels],
-        doseq=True,
-    )
-
-    response = requests.get(
-        f"{TWITCH_STREAMS_URL}?{query}",
-        timeout=30,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Client-Id": TWITCH_CLIENT_ID,
-            "User-Agent": TWITCH_USER_AGENT,
-        },
-    )
-    response.raise_for_status()
-
-    payload = response.json()
-    streams = payload.get("data") or []
-
-    if not isinstance(streams, list):
-        return []
+    for batch in _channel_batches(channels):
+        batch_streams, token = _fetch_stream_batch(batch, token)
+        streams.extend(batch_streams)
 
     items = []
 
@@ -167,6 +209,9 @@ def fetch_items() -> list[dict]:
                 "published_at": started_at,
                 "feed_url": TWITCH_STREAMS_URL,
                 "image_url": thumbnail_url,
+                # A channel URL is permanent and reused for every broadcast.
+                # Twitch stream IDs, not channel URLs, identify alert events.
+                "dedupe_by_url": False,
             }
         )
 

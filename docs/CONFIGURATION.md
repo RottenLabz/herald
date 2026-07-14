@@ -13,6 +13,17 @@ DISCORD_TOKEN is your Discord bot token.
 
 OWNER_ID is your Discord user ID. Owner-only commands are checked against this ID.
 
+## Discord server target
+
+    HERALD_GUILD_ID=0
+
+For a normal one-server install, leave this at `0` and Herald selects the only
+server it is connected to.
+
+If the bot is connected to more than one server, set `HERALD_GUILD_ID` to the
+server ID Herald is allowed to use. Without an explicit ID, Herald fails closed
+instead of guessing which server should receive alerts.
+
 ## Bot identity
 
     HERALD_NAME=Herald Angel
@@ -74,9 +85,26 @@ You may override these with custom Discord emoji in your private .env.
 
 HERALD_CHECK_SECONDS controls how often Herald checks providers.
 
+HERALD_DELIVERY_MAX_ATTEMPTS controls automatic retries for failed Discord
+deliveries. Failed items are requeued on later watcher cycles until they reach
+the configured cap. Pending delivery is first-in, first-out so older items are
+not starved by newer discoveries. The owner command `herald retry failed` is
+a deliberate manual override and can requeue items that reached the automatic cap.
+
 The recommended public/self-host default is 3600 seconds, or once per hour. This is conservative and avoids unnecessary load on public feeds and APIs.
 
 If you change this value, choose an interval that is reasonable for the providers you use and respect any rate limits or usage guidance from those services.
+
+## Provider modules
+
+    FREE_GAMES_ENABLED=true
+    GPU_UPDATES_ENABLED=true
+    TWITCH_ENABLED=false
+    SECURITY_ENABLED=false
+
+Only enabled providers are fetched and shown in the subscription panel.
+
+Gaming modules are enabled in the public example. Twitch and security are optional for fresh installs. For backwards compatibility, an upgraded v0.1.0 install that does not yet define SECURITY_ENABLED keeps its previous enabled security behaviour; add SECURITY_ENABLED=false explicitly to disable it.
 
 ## GamerPower settings
 
@@ -96,6 +124,10 @@ The provider filters RSS items for GPU/driver-related posts.
 
 ## Security RSS settings
 
+Security is an optional, review-first module. Enable it with:
+
+    SECURITY_ENABLED=true
+
     SECURITY_RSS_URLS=https://www.cisa.gov/cybersecurity-advisories/all.xml,https://www.bleepingcomputer.com/feed/,https://www.ncsc.gov.uk/api/1/services/v1/all-rss-feed.xml
     HERALD_SECURITY_STRICT_FILTER=true
 
@@ -103,7 +135,7 @@ Security alerts are held for manual review by default.
 
 ## Twitch settings
 
-Twitch is disabled by default.
+Twitch is an optional module and is disabled by default.
 
     TWITCH_ENABLED=false
     TWITCH_CLIENT_ID=
@@ -128,7 +160,7 @@ If role pings are enabled, Herald only allows the configured Twitch alert role t
 
 ## Subscription roles
 
-Default expected roles:
+Expected roles for the modules you enable:
 
     Free Games
     GPU Updates

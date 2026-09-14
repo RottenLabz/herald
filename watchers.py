@@ -1,11 +1,8 @@
 from collections.abc import Callable
 
-from config import (
-    FREE_GAMES_ENABLED,
-    GPU_UPDATES_ENABLED,
-    SECURITY_ENABLED,
-    TWITCH_ENABLED,
-)
+from provider_runtime import discover_sources, discovery_worker
+from providers.common import error_code, escape_display_text
+
 from storage import (
     WATCH_STATUS_HELD,
     WATCH_STATUS_PENDING,
@@ -20,7 +17,6 @@ from storage import (
     set_item_status,
     upsert_item,
 )
-from providers import gamerpower, guru3d, security, twitch
 
 
 def startup_mode_to_status(mode: str) -> str:
@@ -38,99 +34,61 @@ def startup_mode_to_status(mode: str) -> str:
     return WATCH_STATUS_HELD
 
 
-def safe_fetch_source(
-    category: str,
-    fetch_func: Callable[[], list[dict]],
-) -> tuple[list[dict], str]:
+def safe_fetch_source(category: str, fetch_func: Callable[[], list[dict]]) -> tuple[list[dict], str]:
     try:
         items = fetch_func()
+        if not isinstance(items, list):
+            return [], "invalid_provider_result"
+        return items, ""
     except Exception as exc:
-        return [], f"{category}: {type(exc).__name__}: {exc}"
-
-    if items is None:
-        return [], ""
-
-    if not isinstance(items, list):
-        return [], f"{category}: provider returned {type(items).__name__}, expected list"
-
-    return items, ""
+        return [], error_code(exc)
 
 
 def fetch_all_sources_with_errors() -> tuple[dict[str, list[dict]], list[str]]:
-    provider_defs: list[tuple[str, Callable[[], list[dict]]]] = []
-
-    if FREE_GAMES_ENABLED:
-        provider_defs.append(("free_games", gamerpower.fetch_items))
-
-    if GPU_UPDATES_ENABLED:
-        provider_defs.append(("gpu_updates", guru3d.fetch_items))
-
-    if TWITCH_ENABLED:
-        provider_defs.append(("stream_alerts", twitch.fetch_items))
-
-    if SECURITY_ENABLED:
-        provider_defs.append(("security_alerts", security.fetch_items))
-
-    sources: dict[str, list[dict]] = {}
-    errors: list[str] = []
-
-    for category, fetch_func in provider_defs:
-        items, error = safe_fetch_source(category, fetch_func)
-        sources[category] = items
-
-        if error:
-            errors.append(error)
-
-    return sources, errors
+    result = discover_sources()
+    sources = {}
+    for item in result["items"]:
+        sources.setdefault(item["category"], []).append(item)
+    return sources, [record["error"] for record in result["health"] if record["error"]]
 
 
 def fetch_all_sources() -> dict[str, list[dict]]:
-    sources, _errors = fetch_all_sources_with_errors()
-    return sources
+    return fetch_all_sources_with_errors()[0]
 
 
-def discover_items(queue_status: str = WATCH_STATUS_HELD) -> dict:
-    sources, errors = fetch_all_sources_with_errors()
-
-    stats = {
-        "seen": 0,
-        "created": 0,
-        "existing": 0,
-        WATCH_STATUS_HELD: 0,
-        WATCH_STATUS_PENDING: 0,
-        WATCH_STATUS_SKIPPED: 0,
-        "by_category": {},
-        "errors": errors,
-    }
-
-    for category, items in sources.items():
-        stats["by_category"][category] = len(items)
-
-        for item in reversed(items):
-            stats["seen"] += 1
-
-            item_status = queue_status
-
-            # Security alerts start review-first, even during normal auto cycles.
-            # They can still be posted manually with: herald post <id>
-            if category == "security_alerts":
-                item_status = WATCH_STATUS_HELD
-
-            # Stream alerts are time-sensitive, so they should never sit in held.
-            # If a watched Twitch channel is live, queue it for posting straight away.
-            if category == "stream_alerts":
-                item_status = WATCH_STATUS_PENDING
-
-            result = upsert_item(item, status=item_status)
-
-            if result.get("created"):
+def ingest_discovery(result: dict, queue_status: str = WATCH_STATUS_HELD) -> dict:
+    stats = {"busy": bool(result.get("busy")), "seen": 0, "created": 0, "existing": 0, "held": 0, "pending": 0,
+             "skipped": 0, "by_category": {}, "health": result.get("health", []),
+             "errors": [record["error"] for record in result.get("health", []) if record["error"]]}
+    if result.get("error"):
+        stats["errors"].append(result["error"])
+    for item in reversed(result.get("items", [])):
+        stats["seen"] += 1
+        category = item.get("category", "announcements")
+        stats["by_category"][category] = stats["by_category"].get(category, 0) + 1
+        # Source policy applies to every category, including legacy categories.
+        item_status = WATCH_STATUS_HELD if item.get("delivery_mode", "review") == "review" else queue_status
+        try:
+            stored = upsert_item(item, status=item_status)
+            if stored.get("created"):
                 stats["created"] += 1
-                status = result.get("status") or ""
+                status = stored.get("status", "")
                 stats[status] = stats.get(status, 0) + 1
             else:
                 stats["existing"] += 1
-
+        except Exception as exc:
+            stats["errors"].append(error_code(exc))
+    stats["errors"] = stats["errors"][:50]
     return stats
+
+
+async def discover_items_async(queue_status: str = WATCH_STATUS_HELD) -> dict:
+    result = await discovery_worker.run()
+    return ingest_discovery(result, queue_status)
+
+
+def discover_items(queue_status: str = WATCH_STATUS_HELD) -> dict:
+    return ingest_discovery(discover_sources(), queue_status)
 
 
 def format_discover_stats(stats: dict) -> str:
@@ -164,8 +122,8 @@ def format_discover_stats(stats: dict) -> str:
 
 
 def format_item_line(item: dict) -> str:
-    tags = item.get("tags") or ""
-    tag_text = f" | tags: `{tags}`" if tags else ""
+    tags = escape_display_text(item.get("tags") or "", 200)
+    tag_text = f" | tags: {tags}" if tags else ""
 
     url = (item.get("url") or "").strip()
 
@@ -174,8 +132,8 @@ def format_item_line(item: dict) -> str:
         url = f"<{url}>"
 
     return (
-        f"`{item.get('id')}` — **{item.get('title', '')}**\n"
-        f"source: `{item.get('source', '')}` | category: `{item.get('category', '')}`{tag_text}\n"
+        f"`{item.get('id')}` — **{escape_display_text(item.get('title', ''), 256)}**\n"
+        f"source: {escape_display_text(item.get('source', ''), 100)} | category: {escape_display_text(item.get('category', ''), 64)}{tag_text}\n"
         f"{url}"
     )
 
@@ -194,20 +152,14 @@ def format_items(title: str, items: list[dict]) -> str:
 
 
 def watcher_status_text() -> str:
-    return (
-        "🎺 **Herald Watcher Status**\n\n"
-        f"Modules — games: `{FREE_GAMES_ENABLED}` | GPU: `{GPU_UPDATES_ENABLED}` | "
-        f"Twitch: `{TWITCH_ENABLED}` | security: `{SECURITY_ENABLED}`\n\n"
-        f"Held: `{count_items_by_status('held')}`\n"
-        f"Pending: `{count_items_by_status('pending')}`\n"
-        f"Posted: `{count_items_by_status('posted')}`\n"
-        f"Failed: `{count_items_by_status('failed')}`\n"
-        f"Skipped: `{count_items_by_status('skipped')}`\n\n"
-        f"Free game items: `{count_items_by_category('free_games')}`\n"
-        f"GPU update items: `{count_items_by_category('gpu_updates')}`\n"
-        f"Stream alert items: `{count_items_by_category('stream_alerts')}`\n"
-        f"Security alert items: `{count_items_by_category('security_alerts')}`"
-    )
+    lines = ["🎺 **Herald Watcher Status**", "",
+             f"Discovery running: `{discovery_worker.running}`",
+             f"Last successful source cycle: `{discovery_worker.last_success_at or 'never'}`", ""]
+    for record in discovery_worker.last_health:
+        lines.append(f"- {escape_display_text(record['name'], 100)}: `{record['status']}` ({record['item_count']})")
+    for status in ("held", "pending", "sending", "uncertain", "posted", "failed", "skipped"):
+        lines.append(f"{status}: `{count_items_by_status(status)}`")
+    return "\n".join(lines)
 
 
 def held_items_text(limit: int = 10) -> str:

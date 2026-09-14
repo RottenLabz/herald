@@ -6,7 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import storage
-from providers import twitch
+import provider_runtime
+from providers.common import normalize_item
 
 
 class TwitchStorageIdentityTests(unittest.TestCase):
@@ -32,12 +33,15 @@ class TwitchStorageIdentityTests(unittest.TestCase):
             "feed_url": "https://api.twitch.tv/helix/streams",
             "image_url": "",
             "dedupe_by_url": False,
+            "delivery_mode": "automatic",
         }
 
     def test_new_stream_id_creates_new_row_for_same_channel_url(self):
         first = storage.upsert_item(self.stream_item("stream-001"), status="pending")
         self.assertTrue(first["created"])
-        storage.mark_item_posted(first["id"], "discord-message-1")
+        claim = storage.claim_item(first["id"])
+        self.assertIsNotNone(claim)
+        self.assertTrue(storage.mark_item_posted(first["id"], "discord-message-1", claim_token=claim["claim_token"], revision=claim["revision"]))
 
         second = storage.upsert_item(self.stream_item("stream-002"), status="pending")
         self.assertTrue(second["created"])
@@ -133,99 +137,51 @@ class TwitchStorageIdentityTests(unittest.TestCase):
         self.assertTrue(next_stream["created"])
 
 
-class FakeResponse:
-    def __init__(self, status_code: int, payload: dict):
-        self.status_code = status_code
-        self._payload = payload
+class SyntheticPrivateProviderTests(unittest.TestCase):
+    """Replacement public extension contract, without a removed service implementation.
 
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
-
-    def json(self):
-        return self._payload
-
-
-class TwitchProviderTests(unittest.TestCase):
+    OAuth refresh and service-specific request batching belong to the operator's
+    future private provider acceptance suite. Core public coverage now verifies
+    identity, bounded results and visible failure on the narrow generic interface.
+    """
     def setUp(self):
-        twitch.TWITCH_ENABLED = True
-        twitch.TWITCH_CLIENT_ID = "client-id"
-        twitch.TWITCH_CLIENT_SECRET = "client-secret"
-        twitch.TWITCH_CHANNELS = ["example"]
-        twitch._clear_token_cache()
-
-    def test_provider_marks_channel_url_as_non_identity(self):
-        twitch._TOKEN_CACHE["access_token"] = "token"
-        twitch._TOKEN_CACHE["expires_at"] = twitch._now() + 3600
-
-        payload = {
-            "data": [
-                {
-                    "id": "stream-001",
-                    "user_login": "example",
-                    "user_name": "Example",
-                    "title": "Live now",
-                    "game_name": "Test Game",
-                    "started_at": "2026-07-14T12:00:00Z",
-                    "thumbnail_url": "https://img/{width}x{height}.jpg",
-                    "viewer_count": 10,
-                    "language": "en",
-                }
-            ]
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.source = {
+            "id": "synthetic-live", "source_id": "synthetic-live", "provider_id": "local",
+            "name": "Synthetic local source", "url": "https://example.com/feed",
+            "enabled": True, "channel_id": 123, "role_id": None,
+            "delivery_mode": "automatic", "category": "stream_alerts", "private": True,
+            "_plugin": {"path": str(self.root), "module": "synthetic"},
         }
 
-        with patch.object(twitch.requests, "get", return_value=FakeResponse(200, payload)):
-            items = twitch.fetch_items()
+    def tearDown(self):
+        self.temp_dir.cleanup()
 
-        self.assertEqual(len(items), 1)
-        self.assertFalse(items[0]["dedupe_by_url"])
-        self.assertEqual(items[0]["external_id"], "stream-001")
+    def write_plugin(self, body):
+        (self.root / "synthetic.py").write_text(body)
 
-    def test_401_obtains_new_app_token_and_retries_once(self):
-        twitch._TOKEN_CACHE["access_token"] = "old-token"
-        twitch._TOKEN_CACHE["expires_at"] = twitch._now() + 3600
+    def test_private_provider_retains_distinct_explicit_event_ids(self):
+        self.write_plugin("def fetch_items():\n    return [{'title':'Event', 'url':'https://example.com/live', 'external_id':str(n)} for n in range(2)]\n")
+        items = provider_runtime.fetch_source(self.source)["items"]
+        self.assertEqual([i["external_id"] for i in items], ["0", "1"])
+        self.assertEqual(items[0]["url"], items[1]["url"])
+        self.assertEqual(items[0]["source_id"], "synthetic-live")
+        self.assertEqual(items[0]["category"], "stream_alerts")
 
-        token_response = FakeResponse(
-            200,
-            {"access_token": "new-token", "expires_in": 3600},
-        )
-        get_responses = [
-            FakeResponse(401, {"status": 401}),
-            FakeResponse(200, {"data": []}),
-        ]
+    def test_private_provider_exception_is_failed_and_sanitized(self):
+        self.write_plugin("def fetch_items():\n    raise RuntimeError('private token must not appear')\n")
+        result = provider_runtime.fetch_source(self.source)
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["health"]["status"], "failed")
+        self.assertNotIn("private token", result["health"]["error"])
 
-        with patch.object(twitch.requests, "post", return_value=token_response) as post_mock, patch.object(
-            twitch.requests,
-            "get",
-            side_effect=get_responses,
-        ) as get_mock:
-            items = twitch.fetch_items()
-
-        self.assertEqual(items, [])
-        self.assertEqual(post_mock.call_count, 1)
-        self.assertEqual(get_mock.call_count, 2)
-        self.assertEqual(twitch._TOKEN_CACHE["access_token"], "new-token")
-
-    def test_more_than_100_channels_are_batched(self):
-        twitch.TWITCH_CHANNELS = [f"channel{n}" for n in range(101)]
-        twitch._TOKEN_CACHE["access_token"] = "token"
-        twitch._TOKEN_CACHE["expires_at"] = twitch._now() + 3600
-
-        with patch.object(
-            twitch.requests,
-            "get",
-            side_effect=[FakeResponse(200, {"data": []}), FakeResponse(200, {"data": []})],
-        ) as get_mock:
-            items = twitch.fetch_items()
-
-        self.assertEqual(items, [])
-        self.assertEqual(get_mock.call_count, 2)
-
-        first_params = get_mock.call_args_list[0].kwargs["params"]
-        second_params = get_mock.call_args_list[1].kwargs["params"]
-        self.assertEqual(sum(1 for key, _ in first_params if key == "user_login"), 100)
-        self.assertEqual(sum(1 for key, _ in second_params if key == "user_login"), 1)
-        self.assertIn(("first", "100"), first_params)
+    def test_private_provider_results_are_bounded_and_partial_is_visible(self):
+        self.write_plugin("def fetch_items():\n    return [{'title':'Event', 'url':'https://example.com/live', 'external_id':str(n)} for n in range(101)]\n")
+        result = provider_runtime.fetch_source(self.source)
+        self.assertEqual(len(result["items"]), 50)
+        self.assertEqual(result["health"]["status"], "degraded")
+        self.assertEqual(result["health"]["error"], "entry_limit_reached")
 
 
 if __name__ == "__main__":

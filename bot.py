@@ -1,11 +1,14 @@
 import asyncio
 import re
 import time
+import config
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import discord
-from presentation import format_published_at
+from presentation import format_published_at, escape_provider_text
+from provider_runtime import get_configured_sources
 from delivery import DeliveryCoordinator
 from storage import recover_interrupted_claims
 
@@ -35,14 +38,6 @@ from config import (
     SUBSCRIPTIONS_CHANNEL_NAME,
     FREE_GAMES_CHANNEL_NAME,
     FREE_GAMES_ENABLED,
-    GPU_UPDATES_CHANNEL_NAME,
-    GPU_UPDATES_ENABLED,
-    STREAM_ALERTS_CHANNEL_NAME,
-    SECURITY_ALERTS_CHANNEL_NAME,
-    SECURITY_ENABLED,
-    TWITCH_ENABLED,
-    TWITCH_PING_ROLE_ENABLED,
-    TWITCH_PING_ROLE_NAME,
 )
 from storage import (
     init_db,
@@ -57,7 +52,7 @@ from storage import (
     audit_verify_text,
 )
 from watchers import (
-    discover_items,
+    discover_items_async,
     failed_items_text,
     format_discover_stats,
     format_skip_stats,
@@ -307,32 +302,20 @@ _RAW_MENTION_RE = re.compile(r"<(@!?|@&|#)(\d+)>")
 
 
 def sanitize_discord_text(value: str, max_chars: int = 500) -> str:
-    text = str(value or "")
-    text = _CONTROL_CHARS_RE.sub(" ", text)
-    text = text.replace("@everyone", "@\u200beveryone")
-    text = text.replace("@here", "@\u200bhere")
-    text = _RAW_MENTION_RE.sub(
-        lambda match: f"<{match.group(1)}\u200b{match.group(2)}>",
-        text,
-    )
-    text = " ".join(text.split()).strip()
-
-    if len(text) > max_chars:
-        text = text[:max_chars].rstrip() + "..."
-
-    return text
+    return escape_provider_text(value, max_chars)
 
 
 def safe_http_url(value: str, max_chars: int = 1000) -> str:
     url = str(value or "").strip()
-    url = _CONTROL_CHARS_RE.sub("", url)
-
-    if len(url) > max_chars:
-        url = url[:max_chars]
-
-    if not url.lower().startswith(("https://", "http://")):
+    if len(url) > max_chars or any(ord(ch) <= 32 for ch in url) or any(ch in url for ch in "<>\\"):
         return ""
-
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            return ""
+        parsed.port
+    except ValueError:
+        return ""
     return url
 
 
@@ -353,261 +336,84 @@ def sanitized_item_for_post(item: dict) -> dict:
     cleaned["url"] = safe_http_url(cleaned.get("url") or "")
     cleaned["image_url"] = safe_http_url(cleaned.get("image_url") or "")
 
-    return cleaned    
+    return cleaned
 
 
 def build_free_game_embed(item: dict) -> discord.Embed:
-    title = item.get("title") or "Free game"
-    url = item.get("url") or ""
-    summary = item.get("summary") or ""
-
-    embed = discord.Embed(
-        title=title[:256],
-        url=url or None,
-        description=summary[:3500] if summary else "Free game / giveaway discovered by Herald Angel.",
-    )
-
-    embed.set_author(name="GamerPower")
-
-    image_url = (item.get("image_url") or "").strip()
-
-    if image_url:
-        embed.set_thumbnail(url=image_url)
-
-    return embed
+    return build_post_payload_for_item(item, configured_guild())[1]
 
 
-def build_gpu_update_embed(item: dict) -> discord.Embed:
-    title = item.get("title") or "GPU driver update"
-    url = item.get("url") or ""
-    summary = item.get("summary") or ""
-
-    embed = discord.Embed(
-        title=title[:256],
-        url=url or None,
-        description=summary[:3500] if summary else "GPU driver update discovered by Herald Angel.",
-    )
-
-    embed.add_field(
-        name="Source",
-        value=item.get("source") or "Guru3D RSS",
-        inline=True,
-    )
-
-    published = format_published_at(item.get("published_at") or "")
-
-    if published:
-        embed.add_field(
-            name="Published",
-            value=published,
-            inline=True,
-        )
-
-    embed.set_footer(text="Guru3D RSS watcher")
-    return embed
-
-def build_stream_alert_embed(item: dict) -> discord.Embed:
-    title = item.get("title") or "Twitch stream live"
-    url = item.get("url") or ""
-    summary = item.get("summary") or ""
-    source = item.get("source") or "Twitch"
-
-    embed = discord.Embed(
-        title=title[:256],
-        url=url or None,
-        description=summary[:3500] if summary else "A watched Twitch channel is live.",
-    )
-
-    embed.add_field(
-        name="Source",
-        value=source,
-        inline=True,
-    )
-
-    published = format_published_at(item.get("published_at") or "")
-
-    if published:
-        embed.add_field(
-            name="Started",
-            value=published,
-            inline=True,
-        )
-
-    image_url = (item.get("image_url") or "").strip()
-
-    if image_url:
-        embed.set_image(url=image_url)
-
-    embed.set_footer(text="Twitch live watcher")
-    return embed
-
-def build_security_alert_embed(item: dict) -> discord.Embed:
-    title = item.get("title") or "Security alert"
-    url = item.get("url") or ""
-    summary = item.get("summary") or ""
-    source = item.get("source") or "Security RSS"
-    tags = item.get("tags") or ""
-
-    embed = discord.Embed(
-        title=title[:256],
-        url=url or None,
-        description=summary[:3500] if summary else "Security alert discovered by Herald Angel.",
-    )
-
-    embed.add_field(
-        name="Source",
-        value=source,
-        inline=True,
-    )
-
-    published = format_published_at(item.get("published_at") or "")
-
-    if published:
-        embed.add_field(
-            name="Published",
-            value=published,
-            inline=True,
-        )
-
-    if tags:
-        embed.add_field(
-            name="Tags",
-            value=str(tags)[:900],
-            inline=False,
-        )
-
-    embed.set_footer(text="Security RSS watcher · review-first")
-    return embed
-
-def target_channel_name_for_item(item: dict) -> str:
-    category = (item.get("category") or "").strip().lower()
-
-    if category == "free_games":
-        return FREE_GAMES_CHANNEL_NAME
-
-    if category == "gpu_updates":
-        return GPU_UPDATES_CHANNEL_NAME
-
-    if category == "stream_alerts":
-        return STREAM_ALERTS_CHANNEL_NAME
-
-    if category == "security_alerts":
-        return SECURITY_ALERTS_CHANNEL_NAME
-
-    return ""
-
-def find_role_by_name(
-    guild: discord.Guild,
-    role_name: str,
-) -> discord.Role | None:
-    wanted = (role_name or "").strip().lower()
-
-    if not wanted:
-        return None
-
-    for role in guild.roles:
-        if role.name.lower() == wanted:
-            return role
-
-    return None
+def source_policy(item: dict) -> dict:
+    source_id = item.get("source_id") or item.get("source")
+    policies = [s for s in get_configured_sources() if s.get("id", s.get("source_id")) == source_id]
+    if len(policies) != 1 or not policies[0].get("enabled"):
+        raise ValueError("source_disabled_or_missing")
+    policy = policies[0]
+    if (item.get("provider_id") != policy.get("provider_id")
+            or not item.get("source_policy_digest")
+            or item["source_policy_digest"] != policy.get("policy_digest")):
+        raise ValueError("source_policy_changed_rediscover_required")
+    pairs = (("destination_channel_id", "channel_id"), ("subscription_role_id", "role_id"))
+    if any(int(item.get(a) or 0) != int(policy.get(b) or 0) for a, b in pairs):
+        raise ValueError("source_policy_changed_rediscover_required")
+    if item.get("delivery_mode") != policy.get("delivery_mode"):
+        raise ValueError("source_policy_changed_rediscover_required")
+    return policy
 
 
-def find_role_mention_by_name(
-    guild: discord.Guild,
-    role_name: str,
-) -> str:
-    role = find_role_by_name(guild, role_name)
-    return role.mention if role else ""
-
-
-def allowed_mentions_for_item(
-    item: dict,
-    guild: discord.Guild,
-) -> discord.AllowedMentions:
-    category = (item.get("category") or "").strip().lower()
-
-    # Only Twitch stream alerts may intentionally ping the configured alert role.
-    # Resolve the role inside the same guild as the destination channel.
-    if category == "stream_alerts" and TWITCH_PING_ROLE_ENABLED:
-        role = find_role_by_name(guild, TWITCH_PING_ROLE_NAME)
-
-        if role:
-            return discord.AllowedMentions(
-                everyone=False,
-                users=False,
-                roles=[role],
-                replied_user=False,
-            )
-
+def allowed_mentions_for_item(item: dict, guild: discord.Guild) -> discord.AllowedMentions:
+    role_id = int(item.get("subscription_role_id") or 0)
+    if role_id:
+        role = guild.get_role(role_id)
+        # The role validator is shared with subscription UI once installed.
+        if role is None or role.is_default() or role.managed or role.permissions.value:
+            # Allow only notification roles with no base permissions here.
+            raise ValueError("notification_role_not_safe")
+        return discord.AllowedMentions(everyone=False, users=False, roles=[role], replied_user=False)
     return discord.AllowedMentions.none()
 
-def build_post_payload_for_item(
-    item: dict,
-    guild: discord.Guild,
-) -> tuple[str, discord.Embed]:
-    item = sanitized_item_for_post(item)
-    category = (item.get("category") or "").strip().lower()
-    title = item.get("title") or "Herald item"
-    source = item.get("source") or "unknown source"
-    url = item.get("url") or ""
 
-    if category == "free_games":
-        content = (
-            f"{emoji('free_game')} **Free Game Found!**\n\n"
-            f"**{title}**\n"
-            f"Source: {source}\n"
-            f"{url}"
-        )
-        return content, build_free_game_embed(item)
-
-    if category == "gpu_updates":
-        content = f"{emoji('gcard')} **Graphics Driver Update**"
-        return content, build_gpu_update_embed(item)
-
-    if category == "stream_alerts":
-        role_mention = ""
-
-        if TWITCH_PING_ROLE_ENABLED:
-            role_mention = find_role_mention_by_name(guild, TWITCH_PING_ROLE_NAME)
-
-        prefix = f"{role_mention}\n" if role_mention else ""
-
-        content = (
-            f"{prefix}📡 **Twitch Stream Live!**\n\n"
-            f"**{title}**\n"
-            f"{url}"
-        )
-        return content, build_stream_alert_embed(item)
-
-    if category == "security_alerts":
-        content = f"{emoji('security')} **Security Alert**"
-        return content, build_security_alert_embed(item)
-
-    embed = discord.Embed(
-        title=title[:256],
-        url=url or None,
-        description=(item.get("summary") or "Herald item.")[:3500],
-    )
-
-    if source:
-        embed.add_field(name="Source", value=source, inline=True)
-
-    published = format_published_at(item.get("published_at") or "")
-
+def build_post_payload_for_item(item: dict, guild: discord.Guild) -> tuple[str, discord.Embed]:
+    cleaned = sanitized_item_for_post(item)
+    url = cleaned.get("url")
+    if not url:
+        raise ValueError("canonical_url_invalid")
+    embed = discord.Embed(title=cleaned.get("title") or "Herald update", url=url,
+                          description=cleaned.get("summary") or None)
+    embed.add_field(name="Source", value=cleaned.get("source") or "Source", inline=True)
+    if cleaned.get("tags"):
+        embed.add_field(name="Tags", value=cleaned["tags"], inline=True)
+    published = format_published_at(str(item.get("published_at") or "")[:100])
     if published:
-        embed.add_field(name="Published", value=published, inline=True)
-
-    return f"{emoji('herald')} **Herald Update**", embed
+        embed.add_field(name="Published", value=sanitize_discord_text(published, 100), inline=True)
+    image_url = cleaned.get("image_url")
+    if image_url:
+        embed.set_image(url=image_url)
+    attribution = safe_http_url(item.get("attribution_url") or "")
+    source_id = str(item.get("source_id") or item.get("source") or "").lower()
+    if source_id == "gamerpower" or source_id.startswith("gamerpower:"):
+        attribution = "https://www.gamerpower.com/"
+    if attribution:
+        label = sanitize_discord_text(item.get("attribution_label") or "Attribution", 100)
+        embed.add_field(name=label, value=f"<{attribution}>", inline=False)
+    # Canonical and attribution URLs stay visible and separate from escaped text.
+    role_id = int(item.get("subscription_role_id") or 0)
+    prefix = f"<@&{role_id}>\n" if role_id else ""
+    content = f"{prefix}{emoji('herald')} **Herald update**\n<{url}>"
+    return content, embed
 
 
 def prepare_delivery(item: dict):
     guild = configured_guild()
     if guild is None:
         raise ValueError("target_guild_unavailable")
-    channel_name = target_channel_name_for_item(item)
-    channel = find_text_channel_by_name(guild, channel_name)
-    if channel is None:
+    policy = source_policy(item)
+    channel = guild.get_channel(int(policy["channel_id"]))
+    if not isinstance(channel, discord.TextChannel) or channel.guild.id != guild.id:
         raise ValueError("destination_unavailable")
+    perms = channel.permissions_for(guild.me)
+    if not all((perms.view_channel, perms.send_messages, perms.embed_links)):
+        raise ValueError("destination_permissions_missing")
     content, embed = build_post_payload_for_item(item, guild)
     return channel, content, embed, allowed_mentions_for_item(item, guild)
 
@@ -645,84 +451,48 @@ async def post_held_items_once(limit: int = 5, max_limit: int = 20) -> dict:
     )
 
 
-async def run_watcher_cycle(first_run: bool = False) -> dict:
-    if first_run:
-        queue_status = startup_mode_to_status(HERALD_STARTUP_BACKLOG_MODE)
-    else:
-        queue_status = "pending"
-
-    discovery = await asyncio.to_thread(discover_items, queue_status)
+async def run_watcher_cycle(first_run: bool = False, deliver: bool = False) -> dict:
+    queue_status = startup_mode_to_status(HERALD_STARTUP_BACKLOG_MODE) if first_run else "pending"
+    WATCHER_RUNTIME["last_poll"] = now_text()
+    discovery = await discover_items_async(queue_status)
     WATCHER_RUNTIME["last_discovery"] = discovery
     WATCHER_RUNTIME["last_provider_errors"] = list(discovery.get("errors") or [])
-
-    delivery = {
-        "checked": 0,
-        "posted": 0,
-        "failed": 0,
-        "missing": 0,
-        "requeued": 0,
-    }
-
-    if HERALD_AUTO_POST_ENABLED:
-        requeued = await asyncio.to_thread(
-            retry_failed,
-            HERALD_DELIVERY_MAX_ATTEMPTS,
-        )
-        delivery = await deliver_pending_items_once(HERALD_POST_BATCH_LIMIT)
-        delivery["requeued"] = requeued
-
-    WATCHER_RUNTIME["last_delivery"] = delivery
-
-    return {
-        "discovery": discovery,
-        "delivery": delivery,
-        "queue_status": queue_status,
-    }
+    WATCHER_RUNTIME["provider_health"] = list(discovery.get("health") or [])
+    if not discovery.get("errors") and not discovery.get("busy"):
+        WATCHER_RUNTIME["last_success"] = now_text()
+    WATCHER_RUNTIME["last_error"] = "provider_discovery_degraded" if discovery.get("errors") else ""
+    delivery = await deliver_pending_items_once(HERALD_POST_BATCH_LIMIT) if deliver else {}
+    return {"discovery": discovery, "delivery": delivery, "queue_status": queue_status}
 
 
 async def run_watchers_loop():
-    print("Herald watcher loop started.", flush=True)
-
     first_run = True
     WATCHER_RUNTIME["running"] = True
+    try:
+        while not client.is_closed():
+            try:
+                result = await run_watcher_cycle(first_run=first_run)
+                if not result["discovery"].get("busy"):
+                    first_run = False
+                    WATCHER_RUNTIME["first_run_complete"] = True
+            except Exception:
+                WATCHER_RUNTIME["last_error"] = "discovery_cycle_failed"
+            await asyncio.sleep(HERALD_CHECK_SECONDS)
+    finally:
+        WATCHER_RUNTIME["running"] = False
 
+
+async def run_delivery_loop():
+    # Separate task: no discovery await, executor pool or shared worker dependency.
     while not client.is_closed():
-        try:
-            WATCHER_RUNTIME["last_poll"] = now_text()
-
-            result = await run_watcher_cycle(first_run=first_run)
-
-            WATCHER_RUNTIME["last_success"] = now_text()
-            WATCHER_RUNTIME["last_error"] = ""
-            WATCHER_RUNTIME["first_run_complete"] = True
-
-            provider_errors = WATCHER_RUNTIME.get("last_provider_errors") or []
-
-            if provider_errors:
-                print(
-                    "Herald provider errors: " + " | ".join(provider_errors[:5]),
-                    flush=True,
-                )
-
-            print(
-                "Herald watcher cycle complete: "
-                f"queue={result.get('queue_status')} "
-                f"created={result.get('discovery', {}).get('created', 0)} "
-                f"requeued={result.get('delivery', {}).get('requeued', 0)} "
-                f"posted={result.get('delivery', {}).get('posted', 0)} "
-                f"failed={result.get('delivery', {}).get('failed', 0)}",
-                flush=True,
-            )
-
-            first_run = False
-
-        except Exception as e:
-            WATCHER_RUNTIME["last_error"] = str(e)
-            print(f"Herald watcher loop error: {e}", flush=True)
-
-        await asyncio.sleep(HERALD_CHECK_SECONDS)
-
-    WATCHER_RUNTIME["running"] = False
+        if HERALD_AUTO_POST_ENABLED:
+            try:
+                retry_failed(HERALD_DELIVERY_MAX_ATTEMPTS)
+                await deliver_pending_items_once(HERALD_POST_BATCH_LIMIT)
+                WATCHER_RUNTIME["last_delivery_error"] = ""
+            except Exception:
+                WATCHER_RUNTIME["last_delivery_error"] = "delivery_cycle_failed"
+        await asyncio.sleep(config.HERALD_DELIVERY_SECONDS)
 
 
 def runtime_status_text() -> str:
@@ -773,9 +543,6 @@ async def handle_status(message: discord.Message):
         f"Welcome channel: `#{WELCOME_CHANNEL_NAME}`\n\n"
         f"Modules / channels:\n"
         f"- Free games: `{FREE_GAMES_ENABLED}` — `#{FREE_GAMES_CHANNEL_NAME}`\n"
-        f"- GPU updates: `{GPU_UPDATES_ENABLED}` — `#{GPU_UPDATES_CHANNEL_NAME}`\n"
-        f"- Twitch alerts: `{TWITCH_ENABLED}` — `#{STREAM_ALERTS_CHANNEL_NAME}`\n"
-        f"- Security alerts: `{SECURITY_ENABLED}` — `#{SECURITY_ALERTS_CHANNEL_NAME}`\n\n"
         f"DB events logged: `{count_events()}`\n"
         f"Audit events logged: `{count_audit_events()}`\n"
         f"Held items: `{count_items_by_status('held')}`\n"
@@ -800,7 +567,7 @@ async def handle_help(message: discord.Message):
         f"`{HERALD_COMMAND_PREFIX} watch status`\n"
         "Show watcher outbox counts.\n\n"
         f"`{HERALD_COMMAND_PREFIX} discover`\n"
-        "Fetch all enabled providers, then hold new items for review (live Twitch alerts remain time-sensitive).\n\n"
+        "Fetch all enabled sources, then hold new items for review.\n\n"
         f"`{HERALD_COMMAND_PREFIX} run once`\n"
         "Run one normal watcher cycle. New discoveries become pending and pending items auto-post if enabled.\n\n"
         f"`{HERALD_COMMAND_PREFIX} deliver pending`\n"
@@ -967,7 +734,7 @@ async def handle_owner_command(message: discord.Message, body: str):
                 return
 
         await clean_dm_messages(message, limit)
-        return    
+        return
 
     if body_lower in {"status", "stat"}:
         await handle_status(message)
@@ -1039,7 +806,7 @@ async def handle_owner_command(message: discord.Message, body: str):
     if body_lower in {"discover", "watch discover", "rss discover"}:
         await message.channel.send(f"{emoji('herald')} Discovering Herald watcher items into held...")
         try:
-            stats = await asyncio.to_thread(discover_items, "held")
+            stats = await discover_items_async("held")
             await send_long(message.channel, format_discover_stats(stats))
         except Exception as e:
             await send_long(message.channel, f"Discovery failed: `{e}`")
@@ -1048,7 +815,7 @@ async def handle_owner_command(message: discord.Message, body: str):
     if body_lower in {"run once", "watch run once", "watcher run once"}:
         await message.channel.send(f"{emoji('herald')} Running one Herald watcher cycle...")
         try:
-            result = await run_watcher_cycle(first_run=False)
+            result = await run_watcher_cycle(first_run=False, deliver=True)
             discovery = result.get("discovery", {})
             delivery = result.get("delivery", {})
             await send_long(
@@ -1303,6 +1070,7 @@ async def on_ready():
     if not watcher_loop_started:
         watcher_loop_started = True
         asyncio.create_task(run_watchers_loop())
+        asyncio.create_task(run_delivery_loop())
         print("Herald watcher loop task created.", flush=True)
 
 

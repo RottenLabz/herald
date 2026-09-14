@@ -9,6 +9,8 @@ from typing import Any
 
 import discord
 
+from presentation import escape_provider_text
+
 
 LEGACY_SUBSCRIPTIONS = {
     "free-games": "Free Games",
@@ -194,7 +196,7 @@ def subscription_diagnostics(guild: discord.Guild | None) -> list[dict[str, str]
 
 
 def _display_name(name: str) -> str:
-    return discord.utils.escape_mentions(discord.utils.escape_markdown(name))
+    return escape_provider_text(name, 100)
 
 
 def make_subscription_embed(guild: discord.Guild | None = None, page: int = 0) -> discord.Embed:

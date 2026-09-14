@@ -30,7 +30,18 @@ class SourceExportTests(unittest.TestCase):
         self.approve(self.reviewed_names)
         self.commit()
         self.output = self.root / "export.tar.gz"
-        self.clean_env = mock.patch.dict(os.environ, {}, clear=True)
+        # Remove Herald/application settings without erasing the operating-system
+        # execution environment.  On Windows, clearing PATH makes subprocess
+        # unable to launch git.exe, turning exporter tests into false failures.
+        keep = {
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in {
+                "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC",
+                "TEMP", "TMP", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+            }
+        }
+        self.clean_env = mock.patch.dict(os.environ, keep, clear=True)
         self.clean_env.start()
         self.addCleanup(self.clean_env.stop)
 
@@ -212,7 +223,12 @@ class SourceExportTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_symlink_tracked_source_refused(self):
-        (self.root / "linked.py").symlink_to("README.md")
+        try:
+            (self.root / "linked.py").symlink_to("README.md")
+        except OSError as exc:
+            if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows symlink privilege is not available")
+            raise
         self.commit()
         with self.assertRaises(export.ExportError):
             export.export_source(self.root, self.output)

@@ -12,8 +12,12 @@ class ConfigurationSecurityTests(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if not k.startswith(("HERALD_", "OWNER_", "FREE_GAMES_"))}
         env.update(values)
         env["HERALD_ENV_PATH"] = str(ROOT / "not-created-test-env")
+        # Captured subprocess stdout is not guaranteed to be UTF-8 on Windows.
+        # Force a stable encoding so emoji configuration tests exercise Herald's
+        # values rather than failing in the child process's legacy code page.
+        env["PYTHONIOENCODING"] = "utf-8"
         return subprocess.run([sys.executable, "-c", "import config; " + expression], cwd=ROOT,
-                              env=env, capture_output=True, text=True, timeout=10)
+                              env=env, capture_output=True, text=True, encoding="utf-8", timeout=10)
 
     def test_owner_false_never_disables_ownership(self):
         result = self.run_config({"HERALD_OWNER_ONLY": "false"})

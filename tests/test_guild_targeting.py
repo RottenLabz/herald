@@ -23,7 +23,7 @@ class FakeClient:
 
 
 class GuildTargetingTests(unittest.TestCase):
-    def test_single_guild_is_selected_automatically(self):
+    def test_single_guild_requires_explicit_target(self):
         guild = FakeGuild(123, "Only Server")
 
         with patch.object(bot, "client", FakeClient([guild])), patch.object(
@@ -31,7 +31,7 @@ class GuildTargetingTests(unittest.TestCase):
             "HERALD_GUILD_ID",
             0,
         ):
-            self.assertIs(bot.configured_guild(), guild)
+            self.assertIsNone(bot.configured_guild())
 
     def test_multiple_guilds_fail_closed_without_explicit_id(self):
         guilds = [FakeGuild(123, "One"), FakeGuild(456, "Two")]
@@ -42,7 +42,7 @@ class GuildTargetingTests(unittest.TestCase):
             0,
         ):
             self.assertIsNone(bot.configured_guild())
-            self.assertIn("more than one server", bot.configured_guild_error())
+            self.assertIn("HERALD_GUILD_ID", bot.configured_guild_error())
 
     def test_explicit_guild_id_selects_only_intended_server(self):
         guilds = [FakeGuild(123, "One"), FakeGuild(456, "Two")]

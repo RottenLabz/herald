@@ -1,7 +1,10 @@
 import asyncio
 import re
 import time
+import sys
 import config
+import storage
+from instance_lock import acquire_instance
 from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -14,6 +17,10 @@ from storage import recover_interrupted_claims
 
 from subscriptions import (
     SubscriptionView,
+    configure_subscriptions,
+    subscription_views,
+    get_subscription_definitions,
+    validate_subscription_role,
     make_subscription_embed,
 )
 
@@ -36,7 +43,6 @@ from config import (
     WELCOME_ENABLED,
     WELCOME_CHANNEL_NAME,
     SUBSCRIPTIONS_CHANNEL_NAME,
-    FREE_GAMES_CHANNEL_NAME,
     FREE_GAMES_ENABLED,
 )
 from storage import (
@@ -59,8 +65,6 @@ from watchers import (
     get_item,
     held_items,
     held_items_text,
-    mark_failed,
-    mark_posted,
     pending_items,
     pending_items_text,
     posted_items_text,
@@ -78,7 +82,45 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-client = discord.Client(intents=intents)
+class HeraldClient(discord.Client):
+    async def setup_hook(self):
+        if getattr(self, "_herald_setup_complete", False):
+            return
+        from slash_commands import synchronize_commands
+        self._instance_lease = acquire_instance(storage._db_path())
+        self._herald_tasks = []
+        try:
+            init_db()
+            recover_interrupted_claims()
+            configure_subscriptions(HERALD_GUILD_ID, get_configured_sources)
+            # Register stable IDs for future feed additions, even empty pages.
+            for page in range(11):
+                self.add_view(SubscriptionView(page=page, register_empty=True))
+            self.add_view(SubscriptionView(register_all=True))
+            await synchronize_commands(self, sys.modules[__name__])
+            self._herald_setup_complete = True
+        except BaseException:
+            self._instance_lease.close()
+            self._instance_lease = None
+            raise
+
+    async def close(self):
+        tasks = getattr(self, "_herald_tasks", [])
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await super().close()
+        finally:
+            lease = getattr(self, "_instance_lease", None)
+            if lease is not None:
+                lease.close()
+                self._instance_lease = None
+
+
+
+client = HeraldClient(intents=intents)
 
 watcher_loop_started = False
 persistent_view_registered = False
@@ -136,50 +178,30 @@ def command_body(prompt: str) -> str | None:
 
 
 def find_text_channel_by_name(guild: discord.Guild, name: str):
-    wanted = name.strip().lower()
-
-    for channel in guild.text_channels:
-        if channel.name.lower() == wanted:
-            return channel
-
-    return None
+    matches = [channel for channel in guild.text_channels if channel.name.lower() == (name or "").lower()]
+    return matches[0] if len(matches) == 1 else None
 
 
 def configured_guild() -> discord.Guild | None:
-    if HERALD_GUILD_ID > 0:
-        return client.get_guild(HERALD_GUILD_ID)
-
-    if len(client.guilds) == 1:
-        return client.guilds[0]
-
-    return None
+    return client.get_guild(HERALD_GUILD_ID) if HERALD_GUILD_ID > 0 else None
 
 
 def configured_guild_error() -> str:
-    if not client.guilds:
-        return "I am not connected to any Discord server yet."
-
-    if HERALD_GUILD_ID > 0:
-        return (
-            f"Configured HERALD_GUILD_ID `{HERALD_GUILD_ID}` is not currently available."
-        )
-
-    return (
-        "I am connected to more than one server. Set HERALD_GUILD_ID in .env "
-        "so alerts cannot be posted to the wrong server."
-    )
+    return "Set HERALD_GUILD_ID to the intended server ID and ensure Herald belongs to it."
 
 
 async def post_subscription_panel(target_channel: discord.TextChannel) -> None:
-    await target_channel.send(
-        embed=make_subscription_embed(target_channel.guild),
-        view=SubscriptionView(),
-    )
+    guild = configured_guild()
+    if guild is None or target_channel.guild.id != guild.id:
+        raise ValueError("wrong_target_guild")
+    for page, view in enumerate(subscription_views()):
+        await target_channel.send(embed=make_subscription_embed(guild, page=page),
+                                  view=view, allowed_mentions=discord.AllowedMentions.none())
 
 
 def build_welcome_message(member: discord.Member) -> str:
     return (
-        f"{emoji('herald')} Welcome to **{member.guild.name}**, {member.mention}! "
+        f"{emoji('herald')} Welcome to **{sanitize_discord_text(member.guild.name, 100)}**, {member.mention}! "
         "Make yourself comfy."
     )
 
@@ -191,9 +213,13 @@ async def post_welcome_for_member(
     if not WELCOME_ENABLED:
         return False, "Welcome messages are disabled."
 
-    channel = find_text_channel_by_name(member.guild, WELCOME_CHANNEL_NAME)
+    guild = configured_guild()
+    if guild is None or member.guild.id != guild.id:
+        return False, "Welcome target does not match the configured server."
+    channel = (guild.get_channel(config.WELCOME_CHANNEL_ID) if config.WELCOME_CHANNEL_ID
+               else find_text_channel_by_name(guild, WELCOME_CHANNEL_NAME))
 
-    if channel is None:
+    if not isinstance(channel, discord.TextChannel) or channel.guild.id != guild.id:
         return False, f"Welcome channel #{WELCOME_CHANNEL_NAME} not found in {member.guild.name}."
 
     try:
@@ -221,7 +247,7 @@ async def post_welcome_for_member(
         return False, f"Missing permission to send welcome in #{channel.name}."
 
     except Exception as e:
-        return False, f"Welcome failed: {e}"
+        return False, "Welcome failed; check configured channel and Discord permissions."
 
 
 async def clean_dm_messages(message: discord.Message, limit: int = DM_CLEAN_DEFAULT_LIMIT):
@@ -364,10 +390,12 @@ def source_policy(item: dict) -> dict:
 def allowed_mentions_for_item(item: dict, guild: discord.Guild) -> discord.AllowedMentions:
     role_id = int(item.get("subscription_role_id") or 0)
     if role_id:
-        role = guild.get_role(role_id)
-        # The role validator is shared with subscription UI once installed.
-        if role is None or role.is_default() or role.managed or role.permissions.value:
-            # Allow only notification roles with no base permissions here.
+        definitions = [d for d in get_subscription_definitions() if d.role_id == role_id
+                       and d.source_id == (item.get("source_id") or item.get("source"))]
+        if len(definitions) != 1:
+            raise ValueError("notification_role_not_configured")
+        role, error = validate_subscription_role(guild, definitions[0])
+        if error or role is None:
             raise ValueError("notification_role_not_safe")
         return discord.AllowedMentions(everyone=False, users=False, roles=[role], replied_user=False)
     return discord.AllowedMentions.none()
@@ -517,106 +545,27 @@ def runtime_status_text() -> str:
         f"Last delivery requeued: `{delivery.get('requeued', 0)}`\n"
         f"Last delivery checked: `{delivery.get('checked', 0)}`\n"
         f"Last delivery posted: `{delivery.get('posted', 0)}`\n"
-        f"Last delivery failed: `{delivery.get('failed', 0)}`"
+        f"Last delivery failed: `{delivery.get('failed', 0)}`; uncertain: `{delivery.get('uncertain', 0)}`"
     )
 
 
 async def handle_status(message: discord.Message):
-    guild_names = ", ".join(guild.name for guild in client.guilds) or "none"
-    target_guild = configured_guild()
-    target_guild_text = (
-        f"{target_guild.name} (`{target_guild.id}`)"
-        if target_guild
-        else f"unresolved — {configured_guild_error()}"
-    )
-
-    reply = (
-        f"{emoji('herald')} **{HERALD_NAME} Status**\n\n"
-        f"Online: `yes`\n"
-        f"Guilds: `{len(client.guilds)}` — {guild_names}\n"
-        f"Target guild: {target_guild_text}\n"
-        f"Configured guild ID: `{HERALD_GUILD_ID or 'automatic-single-guild'}`\n"
-        f"Owner-only: `{HERALD_OWNER_ONLY}`\n"
-        f"DM commands: `{HERALD_DM_COMMANDS_ENABLED}`\n"
-        f"Server commands: `{HERALD_SERVER_COMMANDS_ENABLED}`\n"
-        f"Welcome enabled: `{WELCOME_ENABLED}`\n"
-        f"Welcome channel: `#{WELCOME_CHANNEL_NAME}`\n\n"
-        f"Modules / channels:\n"
-        f"- Free games: `{FREE_GAMES_ENABLED}` — `#{FREE_GAMES_CHANNEL_NAME}`\n"
-        f"DB events logged: `{count_events()}`\n"
-        f"Audit events logged: `{count_audit_events()}`\n"
-        f"Held items: `{count_items_by_status('held')}`\n"
-        f"Pending items: `{count_items_by_status('pending')}`\n"
-        f"Failed items: `{count_items_by_status('failed')}`"
-    )
-
-    await send_long(message.channel, reply)
+    from diagnostics import status_text
+    await send_long(message.channel, status_text(sys.modules[__name__]))
 
 
 async def handle_help(message: discord.Message):
-    reply = (
-        f"{emoji('herald')} **{HERALD_NAME} Commands**\n\n"
-        f"`{HERALD_COMMAND_PREFIX} status`\n"
-        "Show Herald status and configured channels.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} welcome test`\n"
-        "Send a test welcome message to the configured welcome channel.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} runtime`\n"
-        "Show auto watcher runtime state.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} subs panel`\n"
-        "Post the Herald alert subscription button panel in the configured subscriptions channel.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} watch status`\n"
-        "Show watcher outbox counts.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} discover`\n"
-        "Fetch all enabled sources, then hold new items for review.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} run once`\n"
-        "Run one normal watcher cycle. New discoveries become pending and pending items auto-post if enabled.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} deliver pending`\n"
-        "Post pending items now.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} held`\n"
-        "Show held items.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} pending`\n"
-        "Show pending items.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} posted`\n"
-        "Show recently posted items.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} failed`\n"
-        "Show failed items.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} post <id>`\n"
-        "Post an item to its configured Discord channel and mark it posted only after success.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} post held <number>`\n"
-        "Post the first N held items. Safety cap: 20.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} post held all`\n"
-        "Post up to 20 held items at once.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} promote <id>`\n"
-        "Move an item to pending.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} skip <id>`\n"
-        "Skip one item.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} skip <id> <id> <id>`\n"
-        "Skip multiple items by ID.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} skip range <start-id> <end-id>`\n"
-        "Skip every item ID in a range. Maximum 200 at once.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} skip held <number>`\n"
-        "Skip the first N currently held items.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} skip held all`\n"
-        "Skip all held items, up to the safety limit.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} retry failed`\n"
-        "Manually move all failed items back to pending, including items at the automatic retry cap.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} audit verify`\n"
-        "Verify the Herald append-only audit hash chain.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} audit recent [number]`\n"
-        "Show recent audit events in readable form. Default: 10. Maximum: 50.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} audit summary`\n"
-        "Show audit totals by event type, category, and actor.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} audit item <id>`\n"
-        "Show the audit trail for one Herald item.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} audit test`\n"
-        "Create a harmless manual audit test event.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} clean [number]`\n"
-        "Delete recent Herald messages from this DM. Default: 100. Maximum: 250.\n\n"
-        f"`{HERALD_COMMAND_PREFIX} help`\n"
-        "Show this help."
-    )
-
-    await send_long(message.channel, reply)
+    await send_long(message.channel,
+        "**Herald commands**\nUse `/herald` for the normal interactive interface.\n\n"
+        "Owner DM recovery forms:\n"
+        "`herald status` · `herald doctor` · `herald about`\n"
+        "`herald discover` · `herald run once` · `herald deliver pending`\n"
+        "`herald held` · `herald pending` · `herald posted` · `herald failed` · `herald uncertain`\n"
+        "`herald post <id>` · `herald promote <id>` · `herald skip <id>`\n"
+        "`herald skip range <start> <end>` · `herald retry failed`\n"
+        "`herald resolve <id> posted <message_id>` · `herald resolve <id> retry|skip`\n"
+        "`herald subs panel` · `herald welcome test` · `herald clean <number>`\n"
+        "`herald audit verify` · `herald audit recent <number>` · `herald audit summary` · `herald audit item <id>`")
 
 
 def parse_id(parts: list[str]) -> int | None:
@@ -712,9 +661,35 @@ async def handle_skip_command(message: discord.Message, parts: list[str]):
 
 
 async def handle_owner_command(message: discord.Message, body: str):
+    # Enforce at the shared handler as well as the transport boundary.
+    if not is_owner(message.author):
+        return
+    if message.guild is not None and message.guild.id != HERALD_GUILD_ID:
+        return
     body_clean = (body or "").strip()
     body_lower = body_clean.lower()
     parts = body_clean.split()
+    if body_lower in {"doctor", "about"}:
+        import diagnostics
+        fn = diagnostics.doctor_text if body_lower == "doctor" else diagnostics.about_text
+        await send_long(message.channel, fn(sys.modules[__name__]))
+        return
+    if body_lower == "uncertain":
+        from storage import list_items_by_status
+        from watchers import format_items
+        await send_long(message.channel, format_items("Uncertain — reconcile before retry", list_items_by_status("uncertain", 20)))
+        return
+    if parts and parts[0].lower() == "resolve":
+        from storage import resolve_uncertain
+        try:
+            item_id = int(parts[1])
+            resolution = parts[2].lower()
+            message_id = parts[3] if len(parts) > 3 else ""
+            changed = resolve_uncertain(item_id, resolution, message_id=message_id)
+            await send_long(message.channel, "Resolution recorded." if changed else "Item changed or resolution invalid; inspect its current state.")
+        except (ValueError, IndexError):
+            await send_long(message.channel, "Use: herald resolve <id> posted <message_id>, or herald resolve <id> retry|skip. Retry acknowledges possible duplicate delivery.")
+        return
 
     if body_lower in {"", "help", "commands"}:
         await handle_help(message)
@@ -783,7 +758,7 @@ async def handle_owner_command(message: discord.Message, body: str):
             await send_long(message.channel, f"⚠️ {configured_guild_error()}")
             return
 
-        target = find_text_channel_by_name(guild, SUBSCRIPTIONS_CHANNEL_NAME)
+        target = guild.get_channel(config.SUBSCRIPTIONS_CHANNEL_ID) if config.SUBSCRIPTIONS_CHANNEL_ID else find_text_channel_by_name(guild, SUBSCRIPTIONS_CHANNEL_NAME)
 
         if target is None:
             await send_long(
@@ -809,7 +784,7 @@ async def handle_owner_command(message: discord.Message, body: str):
             stats = await discover_items_async("held")
             await send_long(message.channel, format_discover_stats(stats))
         except Exception as e:
-            await send_long(message.channel, f"Discovery failed: `{e}`")
+            await send_long(message.channel, "Discovery failed; check herald doctor.")
         return
 
     if body_lower in {"run once", "watch run once", "watcher run once"}:
@@ -829,11 +804,11 @@ async def handle_owner_command(message: discord.Message, body: str):
                     f"Failed items requeued: `{delivery.get('requeued', 0)}`\n"
                     f"Delivery checked: `{delivery.get('checked', 0)}`\n"
                     f"Posted: `{delivery.get('posted', 0)}`\n"
-                    f"Failed: `{delivery.get('failed', 0)}`"
+                    f"Failed: `{delivery.get('failed', 0)}`; uncertain: `{delivery.get('uncertain', 0)}`; blocked: `{delivery.get('blocked', 0)}`"
                 ),
             )
         except Exception as e:
-            await send_long(message.channel, f"Watcher cycle failed: `{e}`")
+            await send_long(message.channel, "Watcher cycle failed; check herald doctor.")
         return
 
     if body_lower in {"deliver pending", "post pending", "post watcher pending"}:
@@ -845,6 +820,7 @@ async def handle_owner_command(message: discord.Message, body: str):
                 f"Delivery checked: `{delivery.get('checked', 0)}`\n"
                 f"Posted: `{delivery.get('posted', 0)}`\n"
                 f"Failed: `{delivery.get('failed', 0)}`\n"
+                f"Uncertain: `{delivery.get('uncertain', 0)}`; blocked: `{delivery.get('blocked', 0)}`\n"
                 f"Missing: `{delivery.get('missing', 0)}`"
             ),
         )
@@ -882,6 +858,7 @@ async def handle_owner_command(message: discord.Message, body: str):
                 f"Checked: `{delivery.get('checked', 0)}`\n"
                 f"Posted: `{delivery.get('posted', 0)}`\n"
                 f"Failed: `{delivery.get('failed', 0)}`\n"
+                f"Uncertain: `{delivery.get('uncertain', 0)}`; blocked: `{delivery.get('blocked', 0)}`\n"
                 f"Missing: `{delivery.get('missing', 0)}`"
             ),
         )
@@ -1021,7 +998,7 @@ async def handle_owner_command(message: discord.Message, body: str):
         else:
             await send_long(
                 message.channel,
-                f"Failed to post Herald item `{item_id}`: `{detail}`",
+                f"Item `{item_id}` was not confirmed posted: `{detail}`. Inspect its current state before retrying.",
             )
 
         return
@@ -1036,7 +1013,7 @@ async def handle_owner_command(message: discord.Message, body: str):
         if promote_item(item_id):
             await send_long(message.channel, f"Moved Herald item `{item_id}` to pending.")
         else:
-            await send_long(message.channel, f"I could not find Herald item `{item_id}`.")
+            await send_long(message.channel, f"Item `{item_id}` is missing, in flight, or cannot transition; inspect current status.")
         return
 
     await send_long(
@@ -1047,14 +1024,7 @@ async def handle_owner_command(message: discord.Message, body: str):
 
 @client.event
 async def on_ready():
-    global persistent_view_registered, watcher_loop_started
-
-    init_db()
-
-    if not persistent_view_registered:
-        recover_interrupted_claims()
-        client.add_view(SubscriptionView(register_all=True))
-        persistent_view_registered = True
+    global watcher_loop_started
 
     print(
         f"{HERALD_NAME} logged in as {client.user} "
@@ -1069,8 +1039,8 @@ async def on_ready():
 
     if not watcher_loop_started:
         watcher_loop_started = True
-        asyncio.create_task(run_watchers_loop())
-        asyncio.create_task(run_delivery_loop())
+        client._herald_tasks = [asyncio.create_task(run_watchers_loop()),
+                                asyncio.create_task(run_delivery_loop())]
         print("Herald watcher loop task created.", flush=True)
 
 
@@ -1110,7 +1080,7 @@ async def on_message(message: discord.Message):
 
             if HERALD_REPLY_TO_NON_OWNER_DMS:
                 await message.channel.send(
-                    "Herald Angel is an announcement bot and does not accept DMs."
+                    "Herald is an announcement bot and does not accept DMs."
                 )
 
             return
@@ -1130,7 +1100,7 @@ async def on_message(message: discord.Message):
     if not HERALD_SERVER_COMMANDS_ENABLED:
         return
 
-    if HERALD_OWNER_ONLY and not is_owner(message.author):
+    if not is_owner(message.author) or message.guild is None or message.guild.id != HERALD_GUILD_ID:
         return
 
     mentioned = client.user in message.mentions if client.user else False
@@ -1152,6 +1122,9 @@ def main() -> None:
 
     if OWNER_ID <= 0:
         raise RuntimeError("OWNER_ID is missing or invalid. Check the project .env file")
+
+    if HERALD_GUILD_ID <= 0:
+        raise RuntimeError("HERALD_GUILD_ID must identify the target server")
 
     client.run(DISCORD_TOKEN)
 

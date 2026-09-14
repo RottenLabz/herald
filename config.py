@@ -31,16 +31,23 @@ def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    token = value.strip().lower()
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean configuration: {name}")
 
 
 DISCORD_TOKEN = env_str("DISCORD_TOKEN")
 OWNER_ID = env_int("OWNER_ID")
 HERALD_GUILD_ID = env_int("HERALD_GUILD_ID")
-HERALD_NAME = env_str("HERALD_NAME", "Herald Angel")
+HERALD_NAME = env_str("HERALD_NAME", "Herald")
 HERALD_COMMAND_PREFIX = env_str("HERALD_COMMAND_PREFIX", "herald").lower()
 HERALD_DM_COMMANDS_ENABLED = env_bool("HERALD_DM_COMMANDS_ENABLED", True)
-HERALD_OWNER_ONLY = env_bool("HERALD_OWNER_ONLY", True)
+# Deprecated: validate the legacy value but never allow it to weaken ownership.
+env_bool("HERALD_OWNER_ONLY", True)
+HERALD_OWNER_ONLY = True
 HERALD_REPLY_TO_NON_OWNER_DMS = env_bool("HERALD_REPLY_TO_NON_OWNER_DMS", False)
 HERALD_SERVER_COMMANDS_ENABLED = env_bool("HERALD_SERVER_COMMANDS_ENABLED", False)
 HERALD_DB_PATH = env_str("HERALD_DB_PATH", "./data/herald.db")
@@ -80,9 +87,12 @@ if FREE_GAMES_DELIVERY_MODE not in {"automatic", "review"}:
 GAMERPOWER_API_URL = "https://www.gamerpower.com/api/giveaways"
 GAMERPOWER_RSS_URL = "https://www.gamerpower.com/rss/giveaways"
 HERALD_FREE_GAME_STRICT_FILTER = env_bool("HERALD_FREE_GAME_STRICT_FILTER", True)
-# Inert compatibility for old subscription panels until the modern UI replaces them.
-GPU_UPDATES_ENABLED = SECURITY_ENABLED = TWITCH_ENABLED = False
-FREE_GAMES_CHANNEL_NAME = "free-games"
-GPU_UPDATES_CHANNEL_NAME = "gpu-updates"
-STREAM_ALERTS_CHANNEL_NAME = "stream-alerts"
-SECURITY_ALERTS_CHANNEL_NAME = "security-alerts"
+
+HERALD_COMMAND_SCOPE = env_str("HERALD_COMMAND_SCOPE", "guild")
+if HERALD_COMMAND_SCOPE not in {"guild", "global"}:
+    raise ValueError("HERALD_COMMAND_SCOPE must be guild or global")
+HERALD_BUILD_ID = env_str("HERALD_BUILD_ID", "")
+# Optional commit/build label, never a free-form credential-bearing value.
+import re
+if HERALD_BUILD_ID and not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", HERALD_BUILD_ID):
+    raise ValueError("HERALD_BUILD_ID must be a short alphanumeric build label")

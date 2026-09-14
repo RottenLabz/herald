@@ -44,7 +44,7 @@ Privileged commands always require `OWNER_ID`. Legacy server text commands are d
 
 The hardened service layout separates root-owned application code under `/opt/rottenlabz-herald` from writable runtime state under `/var/lib/rottenlabz-herald`. A root-owned environment file under `/etc/rottenlabz-herald` supplies credentials. This is a proposed installation layout, not a claim about an existing deployment.
 
-`backup-noenv.sh` now exports **reviewed committed source only**. It requires a clean tracked tree and the explicit `approved-source-manifest.txt`, runs the built-in secret checks, then checks every archive member against committed bytes. It excludes runtime files and does not include untracked or uncommitted private changes. It is not a database or complete private deployment backup. See [security and export notes](docs/SECURITY.md).
+`backup-noenv.sh` now exports **reviewed committed source only**. It requires a clean tracked tree and the explicit `approved-source-manifest.txt`, runs the built-in secret checks, then checks the exact complete manifest and every archive member against committed bytes. Tracked runtime/private material or a configured runtime path colliding with approved source causes failure. Untracked and uncommitted private changes are not included. It is not a database or complete private deployment backup. See [security and export notes](docs/SECURITY.md).
 
 Existing Herald Angel v0.1.1 installations must follow [private migration notes](PRIVATE_VPS_MIGRATION_NOTES.md). Historical queue categories and audit rows are preserved; removed provider integrations are not automatically recreated.
 

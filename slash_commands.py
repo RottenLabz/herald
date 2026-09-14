@@ -295,8 +295,8 @@ def install_commands(client, services):
             if not acknowledge_duplicate_risk:
                 await respond(interaction, "Check Discord first and explicitly acknowledge the duplicate-delivery risk.")
                 return
-            if resolution == "posted" and (not message_id.isascii() or not message_id.isdigit() or not 1 <= len(message_id) <= 20):
-                await respond(interaction, "A numeric Discord message ID is required to record a posted receipt.")
+            if not storage.valid_uncertainty_resolution(resolution, message_id):
+                await respond(interaction, "Use posted, retry or skip. Posted requires a Discord message ID of 1–20 ASCII digits.")
                 return
             item = storage.get_item_by_id(item_id)
             changed = item and storage.resolve_uncertain(item_id, resolution, message_id=message_id,

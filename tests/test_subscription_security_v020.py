@@ -67,6 +67,42 @@ class SubscriptionSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.member.add_roles.assert_not_awaited()
         self.member.remove_roles.assert_not_awaited()
 
+    def channel_with_overwrite(self, channel_class, channel_id, **permissions):
+        """Exercise the installed discord.py channel/overwrite implementation."""
+        # GuildChannel.overwrites_for may distinguish Role from Member by type;
+        # use actual Role instances, including the hierarchy comparison peer.
+        def live_role(role):
+            return discord.Role(
+                guild=self.guild, state=SimpleNamespace(),
+                data={
+                    "id": str(role.id), "name": role.name,
+                    "permissions": str(role.permissions.value), "position": role.position,
+                    "color": 0, "colors": {
+                        "primary_color": 0, "secondary_color": None, "tertiary_color": None,
+                    },
+                    "hoist": False, "managed": role.managed, "mentionable": False, "flags": 0,
+                },
+            )
+        self.role = live_role(self.role)
+        self.guild.me.top_role = live_role(self.guild.me.top_role)
+        channel_type = {
+            discord.TextChannel: discord.ChannelType.text,
+            discord.CategoryChannel: discord.ChannelType.category,
+            discord.VoiceChannel: discord.ChannelType.voice,
+        }[channel_class]
+        allowed = discord.Permissions(**permissions)
+        return channel_class(
+            state=SimpleNamespace(), guild=self.guild,
+            data={
+                "id": str(channel_id), "name": "alerts" if channel_id == 30 else "staff-private",
+                "type": channel_type.value, "position": 0, "bitrate": 64000, "user_limit": 0,
+                "permission_overwrites": [{
+                    "id": str(self.role.id), "type": 0,
+                    "allow": str(allowed.value), "deny": "0",
+                }],
+            },
+        )
+
     async def test_target_guild_member_can_toggle_only_configured_safe_role(self):
         await self.choose()
         self.member.add_roles.assert_awaited_once_with(self.role, reason="Herald subscription opt-in")
@@ -154,6 +190,63 @@ class SubscriptionSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.no_role_changes()
         self.assertIn("channel permissions", self.interaction.response.send_message.call_args.args[0])
 
+    async def test_unrelated_text_category_and_voice_view_grants_are_rejected(self):
+        for channel_class in (discord.TextChannel, discord.CategoryChannel, discord.VoiceChannel):
+            with self.subTest(channel_class=channel_class.__name__):
+                unrelated = self.channel_with_overwrite(channel_class, 31, view_channel=True)
+                self.guild.channels = [self.channel, unrelated]
+                await self.choose()
+                self.no_role_changes()
+                self.assertIn("outside its alert destination", self.interaction.response.send_message.call_args.args[0])
+
+    async def test_configured_alert_destination_allows_only_expected_view_and_read(self):
+        self.channel = self.channel_with_overwrite(
+            discord.TextChannel, 30, view_channel=True, read_message_history=True,
+        )
+        self.guild.channels = [self.channel]
+        self.guild.get_channel = MagicMock(return_value=self.channel)
+        await self.choose()
+        self.member.add_roles.assert_awaited_once_with(self.role, reason="Herald subscription opt-in")
+        self.guild.get_channel.assert_called_once_with(30)
+
+    async def test_resolved_destination_is_checked_even_if_channel_listing_omits_it(self):
+        self.channel = self.channel_with_overwrite(discord.TextChannel, 30, send_messages=True)
+        self.guild.channels = []
+        await self.choose()
+        self.no_role_changes()
+        self.assertIn("only view/read", self.interaction.response.send_message.call_args.args[0])
+
+    async def test_non_read_grants_on_alert_destination_are_rejected(self):
+        for permission in ("send_messages", "send_messages_in_threads", "add_reactions", "connect"):
+            with self.subTest(permission=permission):
+                self.channel = self.channel_with_overwrite(discord.TextChannel, 30, **{permission: True})
+                self.guild.channels = [self.channel]
+                await self.choose()
+                self.no_role_changes()
+                self.assertIn("only view/read", self.interaction.response.send_message.call_args.args[0])
+
+    async def test_privileged_unrelated_overwrite_is_rejected(self):
+        unrelated = self.channel_with_overwrite(discord.TextChannel, 31, manage_webhooks=True)
+        self.guild.channels = [self.channel, unrelated]
+        await self.choose()
+        self.no_role_changes()
+        self.assertIn("privileged channel permissions", self.interaction.response.send_message.call_args.args[0])
+
+    async def test_non_view_grants_on_unrelated_channels_are_also_rejected(self):
+        unrelated = self.channel_with_overwrite(discord.VoiceChannel, 31, connect=True)
+        self.guild.channels = [self.channel, unrelated]
+        await self.choose()
+        self.no_role_changes()
+        self.assertIn("outside its alert destination", self.interaction.response.send_message.call_args.args[0])
+
+    async def test_global_view_and_voice_access_permissions_are_rejected(self):
+        for permission in ("view_channel", "connect"):
+            with self.subTest(permission=permission):
+                self.role.permissions = discord.Permissions(**{permission: True})
+                await self.choose()
+                self.no_role_changes()
+                self.assertIn("server-wide channel access", self.interaction.response.send_message.call_args.args[0])
+
     async def test_staff_role_name_is_rejected_even_without_permission_bits(self):
         self.role.name = "Community Staff"
         await self.choose()
@@ -168,6 +261,25 @@ class SubscriptionSecurityTests(unittest.IsolatedAsyncioTestCase):
         await self.choose()
         self.no_role_changes()
 
+    async def test_wrong_guild_or_stale_role_object_is_rejected(self):
+        for role in (Role(SimpleNamespace(id=99), 20), Role(self.guild, 21)):
+            with self.subTest(role_guild=role.guild.id, role_id=role.id):
+                self.guild.get_role = lambda role_id: role
+                await self.choose()
+                self.no_role_changes()
+                self.assertIn("role is missing", self.interaction.response.send_message.call_args.args[0])
+
+    async def test_wrong_guild_or_stale_channel_object_is_rejected(self):
+        for channel in (
+            SimpleNamespace(id=30, guild=SimpleNamespace(id=99)),
+            SimpleNamespace(id=31, guild=self.guild),
+        ):
+            with self.subTest(channel_guild=channel.guild.id, channel_id=channel.id):
+                self.guild.get_channel = lambda channel_id: channel
+                await self.choose()
+                self.no_role_changes()
+                self.assertIn("channel is missing", self.interaction.response.send_message.call_args.args[0])
+
     async def test_stale_panel_cannot_grant_reconfigured_role(self):
         view = subscriptions.SubscriptionView()
         old_token = subscriptions.get_subscription_definitions()[0].token
@@ -175,6 +287,17 @@ class SubscriptionSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.role.id = 21
         await self.choose(old_token, view)
         self.no_role_changes()
+        self.assertIn("changed or is disabled", self.interaction.response.send_message.call_args.args[0])
+
+    async def test_stale_panel_cannot_grant_role_after_destination_changes(self):
+        view = subscriptions.SubscriptionView()
+        old_token = subscriptions.get_subscription_definitions()[0].token
+        self.sources[0]["channel_id"] = 31
+        self.guild.get_channel = MagicMock(side_effect=AssertionError("Stale panel must fail before lookup"))
+        self.assertNotEqual(old_token, subscriptions.get_subscription_definitions()[0].token)
+        await self.choose(old_token, view)
+        self.no_role_changes()
+        self.guild.get_channel.assert_not_called()
         self.assertIn("changed or is disabled", self.interaction.response.send_message.call_args.args[0])
 
     async def test_disabled_source_is_rechecked_on_existing_panel(self):

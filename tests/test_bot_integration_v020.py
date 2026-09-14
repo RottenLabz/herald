@@ -63,6 +63,67 @@ class BotIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://www.gamerpower.com/", rendered)
         self.assertEqual(kwargs["allowed_mentions"].to_dict()["parse"], [])
 
+    async def test_welcome_message_uses_independent_welcome_slot(self):
+        member = SimpleNamespace(guild=SimpleNamespace(name="Example guild"), mention="<@101>")
+        with patch.dict(bot.HERALD_EMOJIS, {"herald": "📣", "welcome": "🌻"}):
+            rendered = bot.build_welcome_message(member)
+        self.assertTrue(rendered.startswith("🌻 Welcome"))
+        self.assertNotIn("📣", rendered)
+
+    def resolution_command(self):
+        client = discord.Client(intents=discord.Intents.none())
+        self.addAsyncCleanup(client.close)
+        tree = slash_commands.install_commands(client, bot)
+        return tree.get_command("herald", guild=discord.Object(id=303)).get_command("queue").get_command("resolve")
+
+    async def resolve_both(self, command, resolution, message_id=""):
+        message = SimpleNamespace(author=SimpleNamespace(id=101), guild=None,
+                                  channel=SimpleNamespace(send=AsyncMock()))
+        await bot.handle_owner_command(message, f"resolve {self.row['id']} {resolution} {message_id}")
+        current = self.owner_interaction()
+        await command.callback(current, self.row["id"], resolution, True, message_id)
+        kwargs = current.followup.send.await_args.kwargs
+        self.assertTrue(kwargs["ephemeral"])
+        self.assertEqual(kwargs["allowed_mentions"].to_dict()["parse"], [])
+
+    async def test_dm_slash_resolution_reject_invalid_input_equally(self):
+        command = self.resolution_command()
+        cases = [("posted", value) for value in ("", "not-an-id", "１２３", "١٢٣", "+123", "-123", "1.2", "1" * 21)]
+        cases += [(value, "123") for value in ("delete", "POSTED", "unknown")]
+        for resolution, message_id in cases:
+            with self.subTest(resolution=resolution, message_id=message_id), \
+                    patch.object(storage, "resolve_uncertain") as resolve, \
+                    patch.object(storage, "get_item_by_id") as get_item:
+                await self.resolve_both(command, resolution, message_id)
+                resolve.assert_not_called()
+                get_item.assert_not_called()
+
+    async def test_dm_slash_resolution_bind_same_current_revision(self):
+        command = self.resolution_command()
+        for resolution, message_id in (("posted", "1"), ("posted", "12345678901234567890"), ("retry", ""), ("skip", "")):
+            with self.subTest(resolution=resolution, message_id=message_id), \
+                    patch.object(storage, "resolve_uncertain", return_value=True) as resolve, \
+                    patch.object(storage, "get_item_by_id", return_value={**self.row, "revision": 9}):
+                await self.resolve_both(command, resolution, message_id)
+                self.assertEqual(resolve.call_count, 2)
+                for call in resolve.call_args_list:
+                    self.assertEqual(call.args, (self.row["id"], resolution))
+                    self.assertEqual(call.kwargs, {"message_id": message_id, "expected_revision": 9, "actor": "owner"})
+
+    async def test_dm_slash_resolution_rechecks_state_and_revision(self):
+        command = self.resolution_command()
+        # The real storage transition must reject a pending row from either adapter.
+        await self.resolve_both(command, "posted", "123")
+        self.assertEqual(storage.get_item_by_id(self.row["id"])["status"], "pending")
+        claim = storage.claim_item(self.row["id"])
+        storage.mark_item_uncertain(self.row["id"], "fixture", claim_token=claim["claim_token"],
+                                    revision=claim["revision"])
+        current = storage.get_item_by_id(self.row["id"])
+        # Model a stale read before storage's atomic current-revision check.
+        with patch.object(storage, "get_item_by_id", return_value={**current, "revision": current["revision"] + 1}):
+            await self.resolve_both(command, "retry")
+        self.assertEqual(storage.get_item_by_id(self.row["id"])["status"], "uncertain")
+
     async def test_actual_dm_and_automatic_post_share_claim(self):
         message = SimpleNamespace(author=SimpleNamespace(id=101), guild=None,
                                   channel=SimpleNamespace(send=AsyncMock()))

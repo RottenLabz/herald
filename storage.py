@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import HERALD_DB_PATH
+from presentation import escape_provider_text
 
 
 WATCH_STATUS_HELD = "held"
@@ -581,7 +582,10 @@ def upsert_item(item: dict, status: str | None = None) -> dict:
             assignments = ", ".join(f"{key}=?" for key in MATERIAL_FIELDS)
             conn.execute(
                 f"""UPDATE herald_items SET {assignments}, revision=?, content_digest=?,
-                approval_revision=?, status=?, updated_at=CURRENT_TIMESTAMP
+                approval_revision=?, status=?, post_attempts_count=0,
+                last_post_attempt='', last_post_error='', discord_message_id='',
+                claim_token='', claimed_at='', claimed_revision=NULL,
+                updated_at=CURRENT_TIMESTAMP
                 WHERE id=? AND revision=? AND status=?""",
                 tuple(material[key] for key in MATERIAL_FIELDS) +
                 (revision, digest, approval, new_status, item_id, existing["revision"], old_status),
@@ -870,6 +874,17 @@ def recover_interrupted_claims() -> int:
         return len(rows)
 
 
+def valid_uncertainty_resolution(resolution: str, message_id: str = "") -> bool:
+    """Shared transport boundary: exact action and an ASCII Discord receipt ID."""
+    if not isinstance(resolution, str) or resolution not in {"posted", "retry", "skip"}:
+        return False
+    if not isinstance(message_id, str):
+        return False
+    return resolution != "posted" or (
+        1 <= len(message_id) <= 20 and message_id.isascii() and message_id.isdigit()
+    )
+
+
 def resolve_uncertain(
     item_id: int, resolution: str, *, message_id: str = "", actor: str = "owner",
     expected_revision: int | None = None,
@@ -878,9 +893,7 @@ def resolve_uncertain(
 
     'retry' asserts the operator has checked Discord and accepts the duplicate risk.
     """
-    if actor != "owner" or resolution not in {"posted", "retry", "skip"}:
-        return False
-    if resolution == "posted" and not str(message_id).strip():
+    if actor != "owner" or not valid_uncertainty_resolution(resolution, message_id):
         return False
     init_db()
     with connect() as conn:
@@ -1043,10 +1056,10 @@ def audit_item_text(item_id: int) -> str:
         f"🎺 **Herald audit for item `{item_id}`**",
         "",
         "**Current item:**",
-        f"Title: **{item.get('title', '')}**",
-        f"Status: `{item.get('status', '')}`",
-        f"Source: `{item.get('source', '')}`",
-        f"Category: `{item.get('category', '')}`",
+        f"Title: **{escape_provider_text(item.get('title', ''), 500)}**",
+        f"Status: {escape_provider_text(item.get('status', ''), 80)}",
+        f"Source: {escape_provider_text(item.get('source', ''), 200)}",
+        f"Category: {escape_provider_text(item.get('category', ''), 100)}",
         "",
         "**Audit trail:**",
     ]
@@ -1060,21 +1073,21 @@ def audit_item_text(item_id: int) -> str:
             transition = ""
 
             if old_status or new_status:
-                transition = f" `{old_status or 'none'}` → `{new_status or 'none'}`"
+                transition = f" {escape_provider_text(old_status or 'none', 80)} → {escape_provider_text(new_status or 'none', 80)}"
 
             reason = event.get("reason") or ""
             detail = event.get("detail") or ""
 
             lines.append(
-                f"{event.get('id')}. `{event.get('created_at')}` — "
-                f"**{event.get('event_type')}**{transition}"
+                f"{event.get('id')}. {escape_provider_text(event.get('created_at'), 80)} — "
+                f"**{escape_provider_text(event.get('event_type'), 100)}**{transition}"
             )
 
             if reason:
-                lines.append(f"   reason: `{reason}`")
+                lines.append(f"   reason: {escape_provider_text(reason, 250)}")
 
             if detail:
-                lines.append(f"   detail: {detail[:250]}")
+                lines.append(f"   detail: {escape_provider_text(detail, 250)}")
 
     lines.append("")
     lines.append(
@@ -1116,15 +1129,6 @@ def _safe_json_loads(value: str) -> dict:
         return loaded
 
     return {}
-
-
-def _short_text(value: str, max_chars: int = 180) -> str:
-    value = str(value or "").strip()
-
-    if len(value) > max_chars:
-        return value[:max_chars].rstrip() + "..."
-
-    return value
 
 
 def audit_recent_text(limit: int = 10) -> str:
@@ -1187,33 +1191,33 @@ def audit_recent_text(limit: int = 10) -> str:
 
         transition = ""
         if old_status or new_status:
-            transition = f" `{old_status or 'none'}` → `{new_status or 'none'}`"
+            transition = f" {escape_provider_text(old_status or 'none', 80)} → {escape_provider_text(new_status or 'none', 80)}"
 
         item_text = f" item `{item_id}`" if item_id else ""
 
         lines.append(
-            f"**#{event_id}** `{event_type}`{item_text}{transition}"
+            f"**#{event_id}** {escape_provider_text(event_type, 100)}{item_text}{transition}"
         )
 
         if title:
             if source:
-                lines.append(f"{source}: {_short_text(title, 140)}")
+                lines.append(f"{escape_provider_text(source, 200)}: {escape_provider_text(title, 140)}")
             else:
-                lines.append(_short_text(title, 160))
+                lines.append(escape_provider_text(title, 160))
 
         meta = []
 
         if category:
-            meta.append(f"category: `{category}`")
+            meta.append(f"category: {escape_provider_text(category, 100)}")
 
         if actor:
-            meta.append(f"actor: `{actor}`")
+            meta.append(f"actor: {escape_provider_text(actor, 100)}")
 
         if reason:
-            meta.append(f"reason: `{reason}`")
+            meta.append(f"reason: {escape_provider_text(reason, 250)}")
 
         if created_at:
-            meta.append(f"time: `{created_at}`")
+            meta.append(f"time: {escape_provider_text(created_at, 80)}")
 
         if meta:
             lines.append(" | ".join(meta))
@@ -1275,14 +1279,14 @@ def audit_summary_text() -> str:
         lines.append(f"Reason: `{verification.get('reason')}`")
 
     if latest_event_id is not None:
-        lines.append(f"Latest event: `#{latest_event_id}` at `{latest_created_at}`")
+        lines.append(f"Latest event: `#{latest_event_id}` at {escape_provider_text(latest_created_at, 80)}")
 
     lines.append("")
     lines.append("**By event type:**")
 
     if event_counts:
         for name, count in sorted(event_counts.items()):
-            lines.append(f"- `{name}`: `{count}`")
+            lines.append(f"- {escape_provider_text(name, 100)}: `{count}`")
     else:
         lines.append("- none")
 
@@ -1291,7 +1295,7 @@ def audit_summary_text() -> str:
 
     if category_counts:
         for name, count in sorted(category_counts.items()):
-            lines.append(f"- `{name}`: `{count}`")
+            lines.append(f"- {escape_provider_text(name, 100)}: `{count}`")
     else:
         lines.append("- none")
 
@@ -1300,7 +1304,7 @@ def audit_summary_text() -> str:
 
     if actor_counts:
         for name, count in sorted(actor_counts.items()):
-            lines.append(f"- `{name}`: `{count}`")
+            lines.append(f"- {escape_provider_text(name, 100)}: `{count}`")
     else:
         lines.append("- none")
 

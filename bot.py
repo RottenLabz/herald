@@ -201,7 +201,7 @@ async def post_subscription_panel(target_channel: discord.TextChannel) -> None:
 
 def build_welcome_message(member: discord.Member) -> str:
     return (
-        f"{emoji('herald')} Welcome to **{sanitize_discord_text(member.guild.name, 100)}**, {member.mention}! "
+        f"{emoji('welcome')} Welcome to **{sanitize_discord_text(member.guild.name, 100)}**, {member.mention}! "
         "Make yourself comfy."
     )
 
@@ -680,12 +680,16 @@ async def handle_owner_command(message: discord.Message, body: str):
         await send_long(message.channel, format_items("Uncertain — reconcile before retry", list_items_by_status("uncertain", 20)))
         return
     if parts and parts[0].lower() == "resolve":
-        from storage import resolve_uncertain
         try:
             item_id = int(parts[1])
-            resolution = parts[2].lower()
+            resolution = parts[2]
             message_id = parts[3] if len(parts) > 3 else ""
-            changed = resolve_uncertain(item_id, resolution, message_id=message_id)
+            if len(parts) > 4 or item_id < 1 or not storage.valid_uncertainty_resolution(resolution, message_id):
+                raise ValueError("Invalid uncertainty resolution")
+            item = storage.get_item_by_id(item_id)
+            changed = item and storage.resolve_uncertain(
+                item_id, resolution, message_id=message_id,
+                expected_revision=item["revision"], actor="owner")
             await send_long(message.channel, "Resolution recorded." if changed else "Item changed or resolution invalid; inspect its current state.")
         except (ValueError, IndexError):
             await send_long(message.channel, "Use: herald resolve <id> posted <message_id>, or herald resolve <id> retry|skip. Retry acknowledges possible duplicate delivery.")

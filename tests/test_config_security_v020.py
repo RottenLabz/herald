@@ -20,6 +20,21 @@ class ConfigurationSecurityTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "True")
 
+    def test_welcome_emoji_is_independent_of_herald_emoji(self):
+        for herald, welcome in (("🎺", "👋"), ("📣", "🌻")):
+            with self.subTest(herald=herald, welcome=welcome):
+                result = self.run_config(
+                    {"HERALD_EMOJI_HERALD": herald, "HERALD_EMOJI_WELCOME": welcome},
+                    "print(config.HERALD_EMOJIS['herald']); print(config.HERALD_EMOJIS['welcome'])")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), [herald, welcome])
+
+    def test_welcome_emoji_default_survives_changed_herald_emoji(self):
+        result = self.run_config({"HERALD_EMOJI_HERALD": "📣"},
+                                 "print(config.HERALD_EMOJIS['welcome'])")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "👋")
+
     def test_security_booleans_reject_invalid_and_blank(self):
         for name in ("HERALD_OWNER_ONLY", "HERALD_SERVER_COMMANDS_ENABLED", "HERALD_DM_COMMANDS_ENABLED"):
             for value in ("", "treu", "sometimes"):

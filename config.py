@@ -66,6 +66,7 @@ WELCOME_CHANNEL_ID = env_int("WELCOME_CHANNEL_ID")
 SUBSCRIPTIONS_CHANNEL_ID = env_int("SUBSCRIPTIONS_CHANNEL_ID")
 HERALD_EMOJIS = {
     "herald": env_str("HERALD_EMOJI_HERALD", "🎺"),
+    "welcome": env_str("HERALD_EMOJI_WELCOME", "👋"),
     "free_game": env_str("HERALD_EMOJI_FREE_GAME", "🎮"),
     "gcard": env_str("HERALD_EMOJI_GCARD", "🖥️"),
     "security": env_str("HERALD_EMOJI_SECURITY", "🛡️"),

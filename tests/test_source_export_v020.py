@@ -26,7 +26,8 @@ class SourceExportTests(unittest.TestCase):
         self.write(".env.example", "DISCORD_TOKEN=\nOWNER_ID=0\n")
         self.write("source_export.py", "# reviewed placeholder for fixture only\n")
         self.write("README.md", "# Public source\n")
-        self.approve([".gitignore", ".env.example", "source_export.py", "README.md"])
+        self.reviewed_names = {".gitignore", ".env.example", "source_export.py", "README.md", export.MANIFEST}
+        self.approve(self.reviewed_names)
         self.commit()
         self.output = self.root / "export.tar.gz"
         self.clean_env = mock.patch.dict(os.environ, {}, clear=True)
@@ -51,12 +52,13 @@ class SourceExportTests(unittest.TestCase):
         self.git("add", "-A")
         self.git("commit", "--quiet", "-m", "Synthetic fixture")
 
-    def test_public_template_retained_untracked_private_omitted(self):
+    def test_complete_manifest_and_public_template_retained_untracked_private_omitted(self):
         self.write(".env", "DISCORD_TOKEN=synthetic-not-a-real-token\n")
         self.write("private-operator-notes.txt", "never reviewed for publication")
         export.export_source(self.root, self.output)
         with tarfile.open(self.output) as archive:
             names = set(archive.getnames())
+        self.assertEqual(names, self.reviewed_names)
         self.assertIn(".env.example", names)
         self.assertNotIn(".env", names)
         self.assertNotIn("private-operator-notes.txt", names)
@@ -77,25 +79,63 @@ class SourceExportTests(unittest.TestCase):
         with self.assertRaises(export.ExportError):
             export.export_source(self.root, self.output)
 
-    def test_custom_runtime_and_sidecars_excluded_even_if_tracked_approved(self):
+    def test_unknown_environment_path_settings_cannot_remove_approved_source(self):
+        self.write("bot.py", "# reviewed public bot\n")
+        self.approve(self.reviewed_names | {"bot.py"})
+        self.commit()
+        fake_settings = {"HERALD_FAKE_PATH": "bot.py", "HERALD_FAKE_DIR": "."}
+        for use_dotenv in (False, True):
+            with self.subTest(use_dotenv=use_dotenv):
+                if use_dotenv:
+                    self.write(".env", "HERALD_FAKE_PATH=bot.py\nHERALD_FAKE_DIR=.\n")
+                output = self.root / f"complete-{use_dotenv}.tar.gz"
+                with mock.patch.dict(os.environ, {} if use_dotenv else fake_settings):
+                    export.export_source(self.root, output)
+                with tarfile.open(output) as archive:
+                    self.assertEqual(set(archive.getnames()), self.reviewed_names | {"bot.py"})
+                    self.assertEqual(archive.extractfile("bot.py").read(), b"# reviewed public bot\n")
+
+    def test_actual_runtime_setting_colliding_with_approved_source_refuses(self):
+        for setting in ("HERALD_DB_PATH", "HERALD_FEED_CONFIG_PATH"):
+            for source in ("README.md", ".env.example"):
+                with self.subTest(setting=setting, source=source):
+                    with mock.patch.dict(os.environ, {setting: source}):
+                        with self.assertRaisesRegex(export.ExportError, "Tracked runtime/private"):
+                            export.export_source(self.root, self.output)
+                    self.assertFalse(self.output.exists())
+                    self.assertFalse(Path(str(self.output) + ".sha256").exists())
+
+    def test_missing_approved_committed_member_refuses(self):
+        (self.root / "README.md").unlink()
+        self.commit()
+        with self.assertRaisesRegex(export.ExportError, "absent committed source"):
+            export.export_source(self.root, self.output)
+        self.assertFalse(self.output.exists())
+
+    def test_custom_runtime_and_sidecars_refused_even_if_tracked_approved(self):
         names = ["unusual.runtime", "unusual.runtime-wal", "unusual.runtime-shm", "unusual.runtime-journal",
                  "custom-feed-store", "custom.db", "custom.db-wal", "unusual.runtime.instance.lock"]
-        for name in names:
-            self.write(name, "synthetic runtime data")
-        self.approve([".gitignore", ".env.example", "source_export.py", "README.md", *names])
-        self.commit()
         self.write(".env", "HERALD_DB_PATH=unusual.runtime\nHERALD_FEED_CONFIG_PATH=custom-feed-store\n")
-        export.export_source(self.root, self.output)
-        with tarfile.open(self.output) as archive:
-            self.assertFalse(set(names) & set(archive.getnames()))
+        for name in names:
+            with self.subTest(name=name):
+                self.write(name, "synthetic runtime data")
+                self.approve(self.reviewed_names | {name})
+                self.commit()
+                with self.assertRaisesRegex(export.ExportError, "Tracked runtime/private"):
+                    export.export_source(self.root, self.output)
+                self.assertFalse(self.output.exists())
+                (self.root / name).unlink()
+                self.approve(self.reviewed_names)
+                self.commit()
 
-    def test_sqlite_header_excluded_regardless_filename(self):
+    def test_sqlite_header_refused_regardless_approved_filename(self):
         for index, signature in enumerate(export.DB_SIGNATURES):
-            self.write(f"looks-public-{index}.md", signature + b"synthetic pages")
-        self.commit()
-        export.export_source(self.root, self.output)
-        with tarfile.open(self.output) as archive:
-            self.assertFalse(any("looks-public" in n for n in archive.getnames()))
+            with self.subTest(signature=index):
+                self.write("README.md", signature + b"synthetic pages")
+                self.commit()
+                with self.assertRaisesRegex(export.ExportError, "Binary or database"):
+                    export.export_source(self.root, self.output)
+                self.assertFalse(self.output.exists())
 
     def test_env_never_shell_executed(self):
         target = self.root / "would-be-created"
@@ -103,7 +143,7 @@ class SourceExportTests(unittest.TestCase):
         export.export_source(self.root, self.output)
         self.assertFalse(target.exists())
 
-    def test_environment_runtime_path_and_private_provider_path_excluded(self):
+    def test_unreviewed_tracked_runtime_and_private_provider_paths_refused(self):
         self.write("operator-module.py", "# private provider\n")
         self.write("runtime-config.md", "runtime contents")
         self.commit()
@@ -111,10 +151,26 @@ class SourceExportTests(unittest.TestCase):
             "HERALD_FEED_CONFIG_PATH": str(self.root / "runtime-config.md"),
             "HERALD_PRIVATE_PROVIDERS": '[{"path":' + __import__("json").dumps(str(self.root / "operator-module.py")) + '}]',
         }):
-            export.export_source(self.root, self.output)
-        with tarfile.open(self.output) as archive:
-            self.assertNotIn("operator-module.py", archive.getnames())
-            self.assertNotIn("runtime-config.md", archive.getnames())
+            with self.assertRaisesRegex(export.ExportError, "Tracked runtime/private"):
+                export.export_source(self.root, self.output)
+        self.assertFalse(self.output.exists())
+
+    def test_approved_source_colliding_with_private_provider_path_refused(self):
+        with mock.patch.dict(os.environ, {"HERALD_PRIVATE_PROVIDERS": '[{"path":"source_export.py"}]'}):
+            with self.assertRaisesRegex(export.ExportError, "Tracked runtime/private"):
+                export.export_source(self.root, self.output)
+        self.assertFalse(self.output.exists())
+
+    def test_tracked_custom_environment_file_refused(self):
+        self.write("custom-environment", "OWNER_ID=0\n")
+        self.approve(self.reviewed_names | {"custom-environment"})
+        self.commit()
+        with mock.patch.dict(os.environ, {"HERALD_ENV_PATH": str(self.root / "custom-environment")}):
+            with self.assertRaisesRegex(export.ExportError, "Tracked runtime/private"):
+                export.export_source(self.root, self.output)
+        with self.assertRaisesRegex(export.ExportError, "Tracked runtime/private"):
+            export.export_source(self.root, self.output, env_file=self.root / "custom-environment")
+        self.assertFalse(self.output.exists())
 
     def test_dotenv_preserves_non_shell_paths_and_quoted_json(self):
         self.write(".env", "HERALD_DB_PATH=C:\\existing\\state#1.runtime # comment\n"

@@ -25,6 +25,11 @@ PRIVATE_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".log", ".pem", ".key", ".pyc"
                     ".tar", ".tar.gz", ".tgz", ".zip", "-wal", "-shm", "-journal", ".instance.lock")
 DB_SIGNATURES = (b"SQLite format 3\x00", b"\x37\x7f\x06\x82", b"\x37\x7f\x06\x83",
                  b"\xd9\xd5\x05\xf9\x20\xa1\x63\xd7")
+# Keep this explicit list aligned with settings actually consumed by config.py.
+# Arbitrary environment names must never alter the reviewed source set.
+RUNTIME_PATH_SETTINGS = frozenset({
+    "HERALD_ENV_PATH", "HERALD_DB_PATH", "HERALD_FEED_CONFIG_PATH",
+})
 SECRET_PATTERNS = (
     re.compile(r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"),
     re.compile(r"(?<![\w-])[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,}(?![\w-])"),
@@ -118,17 +123,21 @@ def read_env_file(path: Path) -> dict[str, str]:
 def runtime_paths(root: Path, env_file: Path | None) -> set[Path]:
     values: dict[str, str] = {}
     default = root / ".env"
+    paths = {root / "data", root / "logs", root / "backups", default}
     if default.exists() or default.is_symlink():
         values.update(read_env_file(default))
     configured_env = os.environ.get("HERALD_ENV_PATH")
     if configured_env:
-        values.update(read_env_file(Path(configured_env)))
+        configured_env_path = Path(configured_env)
+        values.update(read_env_file(configured_env_path))
+        paths.add(configured_env_path.resolve())
     if env_file is not None:
         values.update(read_env_file(env_file))
+        paths.add(env_file.resolve())
     values.update(os.environ)
-    paths = {root / "data", root / "logs", root / "backups"}
-    for key, value in values.items():
-        if key.startswith("HERALD_") and key.endswith(("_PATH", "_DIR")) and value:
+    for key in RUNTIME_PATH_SETTINGS:
+        value = values.get(key)
+        if value:
             if "$" in value or "`" in value:
                 raise ExportError("Runtime path expansion is unsupported; export refused.")
             path = Path(value).expanduser()
@@ -213,24 +222,23 @@ def source_files(root: Path, env_file: Path | None = None) -> dict[str, bytes]:
         raise ExportError("Reviewed source manifest is invalid.")
     if not {MANIFEST, ".env.example", "source_export.py"}.issubset(approved):
         raise ExportError("Required reviewed source files are absent from manifest.")
-    if set(approved) - set(entries):
+    approved_set = set(approved)
+    if approved_set - set(entries):
         raise ExportError("Manifest references absent committed source.")
     selected: dict[str, bytes] = {}
     for name, (_, oid) in entries.items():
         if runtime_name(name) or configured_runtime(name, root, paths):
-            continue
+            raise ExportError("Tracked runtime/private material collides with source export; export refused.")
+        if name not in approved_set:
+            raise ExportError("Unreviewed tracked source exists; review the explicit manifest.")
         # Size check precedes reading blobs so accidental tracked large data is bounded.
         if int(git(root, "cat-file", "-s", oid)) > MAX_FILE_BYTES:
             raise ExportError("Tracked file exceeds reviewed export limit.")
         content = git(root, "cat-file", "blob", oid)
-        if content.startswith(DB_SIGNATURES):
-            continue
-        if name not in approved:
-            raise ExportError("Unreviewed tracked source exists; review the explicit manifest.")
         scan_content(name, content)
         selected[name] = content
-    if ".env.example" not in selected:
-        raise ExportError("Public .env.example must be retained.")
+    if set(selected) != approved_set:
+        raise ExportError("Selected source must exactly match the complete reviewed manifest.")
     if sum(map(len, selected.values())) > MAX_ARCHIVE_BYTES:
         raise ExportError("Source set exceeds reviewed export limit.")
     return selected

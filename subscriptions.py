@@ -27,6 +27,12 @@ DANGEROUS_PERMISSIONS = frozenset({
     "manage_events", "view_audit_log", "view_guild_insights",
     "view_creator_monetization_analytics", "bypass_slowmode", "pin_messages",
 })
+# An alert role may open only its own configured destination, and only for
+# reading. In particular, global View Channel and any unrelated channel grant
+# could make opting into notifications expose private server resources.
+DESTINATION_READ_PERMISSIONS = discord.Permissions(
+    view_channel=True, read_message_history=True,
+).value
 STAFF_ROLE_NAME = re.compile(r"(?:^|[^a-z0-9])(?:admins?|administrators?|mods?|moderators?|staff)(?:$|[^a-z0-9])", re.I)
 PAGE_SIZE = 25
 MAX_SOURCES = 256
@@ -47,8 +53,9 @@ class SubscriptionDefinition:
 
     @property
     def token(self) -> str:
-        # A stale panel cannot grant a different role after a configuration edit.
-        return hashlib.sha256(f"{self.source_id}\0{self.role_id}".encode()).hexdigest()[:32]
+        # A stale panel cannot grant a retargeted role after a configuration edit.
+        binding = f"{self.source_id}\0{self.role_id}\0{self.channel_id}"
+        return hashlib.sha256(binding.encode()).hexdigest()[:32]
 
 
 def configure_subscriptions(
@@ -131,15 +138,15 @@ def validate_subscription_role(
     guild: discord.Guild,
     definition: SubscriptionDefinition,
 ) -> tuple[discord.Role | None, str | None]:
-    """Recheck the target, live guild role, hierarchy, and privilege grants."""
+    """Recheck the live role and permit read grants only at its destination."""
     target_error = _target_error(guild)
     if target_error:
         return None, target_error
     role = guild.get_role(definition.role_id)
-    if role is None or role.guild.id != guild.id:
+    if role is None or role.id != definition.role_id or role.guild.id != guild.id:
         return None, "A configured subscription role is missing. Please tell the server owner."
     channel = guild.get_channel(definition.channel_id)
-    if channel is None or channel.guild.id != guild.id:
+    if channel is None or channel.id != definition.channel_id or channel.guild.id != guild.id:
         return None, "A configured subscription channel is missing. Please tell the server owner."
     me = guild.me
     if me is None or not me.guild_permissions.manage_roles:
@@ -148,10 +155,20 @@ def validate_subscription_role(
         return None, "The configured role cannot be managed safely. Please tell the server owner."
     if STAFF_ROLE_NAME.search(role.name) or _dangerous(role.permissions):
         return None, "Privileged or staff roles cannot be used for subscriptions."
-    for guild_channel in guild.channels:
+    if role.permissions.view_channel or role.permissions.connect:
+        return None, "Subscription roles cannot grant server-wide channel access. Please tell the server owner."
+    # Validate the resolved destination itself even if a partial channel listing
+    # omits it; then inspect every other cached guild resource for extra grants.
+    channels = [channel, *(item for item in guild.channels if item.id != channel.id)]
+    for guild_channel in channels:
         allowed, _ = guild_channel.overwrites_for(role).pair()
         if _dangerous(allowed):
             return None, "A subscription role has privileged channel permissions. Please tell the server owner."
+        if guild_channel.id == definition.channel_id:
+            if allowed.value & ~DESTINATION_READ_PERMISSIONS:
+                return None, "A subscription role may grant only view/read channel permissions at its alert destination. Please tell the server owner."
+        elif allowed.value:
+            return None, "A subscription role has channel permissions outside its alert destination. Please tell the server owner."
     return role, None
 
 

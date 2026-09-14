@@ -32,6 +32,8 @@ An existing private Twitch implementation can later be adapted into a trusted st
 | `GAMERPOWER_API_URL`, `GAMERPOWER_RSS_URL` | Removed overrides; the built-in provider uses fixed official endpoints. |
 | `FREE_GAMES_CHANNEL_NAME` | Configure `FREE_GAMES_CHANNEL_ID`; optional `FREE_GAMES_ROLE_ID` and `FREE_GAMES_DELIVERY_MODE`. |
 | Welcome/subscription channel names | Prefer `WELCOME_CHANNEL_ID` / `SUBSCRIPTIONS_CHANNEL_ID`; existing names remain migration fallbacks where supported/unambiguous. |
+| `HERALD_EMOJI_WELCOME` | Preserve the existing value (public default 👋). Welcome messages use the separate `welcome` slot, independent of `HERALD_EMOJI_HERALD`. |
+| Self-service notification role visibility | Remove base View Channel permission and explicit View Channel allows on unrelated channels/categories/voice channels. Only the configured source destination may explicitly allow View Channel / Read Message History. Repost panels after role or destination changes. |
 | `GPU_UPDATES_ENABLED`, `GURU3D_RSS_URL`, GPU channel name | Removed provider keys; use an independently approved generic source, ID-based destination and chosen delivery mode. |
 | `SECURITY_ENABLED`, `SECURITY_RSS_URLS`, `HERALD_SECURITY_STRICT_FILTER`, security channel name | Removed bundled logic; configure individually reviewed generic sources. Legacy strict keyword filtering is not automatically recreated. |
 | `TWITCH_*` and stream channel name | Removed public integration keys; assess privately for the trusted extension, never copy them into public examples. |

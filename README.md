@@ -1,202 +1,57 @@
-# Herald Angel
+# RottenLabz Herald
 
-Herald Angel is a self-hosted Discord announcement and watcher bot.
+RottenLabz Herald is a self-hosted Discord announcement bot. The bot's everyday name is **Herald**. This tree prepares the **v0.2.0 foundation upgrade**; it does not declare a published release.
 
-It can welcome new members, watch public feeds/APIs, queue announcements, post alerts into configured Discord channels, and let members opt into alert roles using subscription buttons.
+Herald discovers announcements, records them in SQLite, and sends them through a shared delivery queue. Each source chooses `automatic` delivery or owner `review`. Material revisions invalidate a review approval; durable claims prevent competing commands from sending the same item concurrently. A send with an unknown outcome becomes `uncertain` and needs deliberate owner resolution. Delivery is not guaranteed exactly once.
 
-Herald Angel is intended for self-hosting. It is not currently offered as a hosted public invite bot or SaaS service.
+## Included features
 
-## Features
+- GamerPower free-game alerts, with a separate clickable attribution backlink and giveaway link.
+- Configurable RSS/Atom sources with channel IDs, optional harmless subscription-role IDs, tags, attribution and per-source policy.
+- Optional trusted local Python provider extensions, disabled until the operator configures them.
+- `/herald` slash commands, ephemeral owner review controls, and owner DM recovery commands.
+- Source-derived subscription menus, welcome messages, runtime diagnostics and a local hash-chain audit trail.
+- Bounded provider retrieval and independent discovery/delivery scheduling.
 
-- Welcome messages for new Discord members.
-- Free game alerts via GamerPower API/RSS.
-- GPU driver/update alerts via Guru3D RSS.
-- Twitch live alerts via Twitch Helix.
-- Optional security alerts via RSS feeds.
-- Subscription role panel with Discord buttons.
-- Owner-only DM command controls.
-- Outbox-style item queue with held, pending, posted, failed, and skipped states.
-- SQLite local storage.
-- Local append-only-style audit trail with hash-chain verification.
-- Module toggles for free games, GPU updates, Twitch, and security feeds.
-- Optional target-guild pinning with fail-closed multi-server behaviour.
-- Public-safe default configuration.
-- NOENV backup helper script.
+GamerPower is the only bundled third-party content integration. Generic feed examples use placeholder URLs. Check each chosen source's terms before fetching, storing or republishing its material. Herald's MIT licence does not license third-party content.
 
-## Safety defaults
+## Start here
 
-Herald Angel is designed with conservative defaults for public self-hosting:
+Use Python **3.12 or newer**, Git, and a dedicated Discord application. Follow [installation](docs/INSTALL.md), then [configuration](docs/CONFIGURATION.md). The installation guide creates the private `.env` with mode `0600` **before** credentials are inserted.
 
-- Owner-only commands are enabled by default.
-- DM commands are enabled by default.
-- Server-channel text commands are disabled by default.
-- Real secrets live in .env, which should not be committed.
-- Provider-controlled text is sanitised before posting to Discord.
-- Feed/API posts do not allow @everyone, user mentions, or arbitrary role mentions.
-- Twitch role pings are limited to the configured stream-alert role.
-- If connected to multiple servers, Herald requires an explicit target guild
-  instead of guessing where alerts should be posted.
+The v0.2.0 dependency security floors come from the September audit. This candidate still requires a clean supported Linux/Python resolver run, real discord.py integration validation, an exact lock, `pip check`, `pip-audit` and an SBOM before release. See [release checklist](RELEASE_CHECKLIST.md).
 
-## Requirements
+Owner commands to begin with:
 
-- Python 3.11 or newer recommended.
-- A Discord bot token.
-- A Discord server where you can invite/manage the bot.
-- SQLite, included with Python on most systems.
-- Optional: Twitch developer app credentials for Twitch live alerts.
-- Optional: security RSS feeds and a security alert channel.
+```text
+/herald status
+/herald doctor
+/herald help
+/herald queue review
+```
 
-## Recommended hosting
+Owner DM fallback:
 
-Herald Angel is designed to run as an always-on self-hosted bot.
+```text
+herald help
+herald status
+herald audit verify
+```
 
-The recommended setup is a small Linux VPS or another always-on Linux machine, so Herald can keep watching feeds and posting alerts 24/7.
+Privileged commands always require `OWNER_ID`. Legacy server text commands are disabled by default. All server operations are scoped to the configured target guild.
 
-The current installation docs are written for Ubuntu/Debian-style Linux using Python virtual environments and systemd.
+## Operations and source exports
 
-Other platforms may work, but Windows and macOS are not the primary documented deployment targets yet.
+The hardened service layout separates root-owned application code under `/opt/rottenlabz-herald` from writable runtime state under `/var/lib/rottenlabz-herald`. A root-owned environment file under `/etc/rottenlabz-herald` supplies credentials. This is a proposed installation layout, not a claim about an existing deployment.
 
-## Quick start
+`backup-noenv.sh` now exports **reviewed committed source only**. It requires a clean tracked tree and the explicit `approved-source-manifest.txt`, runs the built-in secret checks, then checks every archive member against committed bytes. It excludes runtime files and does not include untracked or uncommitted private changes. It is not a database or complete private deployment backup. See [security and export notes](docs/SECURITY.md).
 
-Clone the repo, create a virtual environment, install dependencies, copy the example config, edit .env, and run the bot.
+Existing Herald Angel v0.1.1 installations must follow [private migration notes](PRIVATE_VPS_MIGRATION_NOTES.md). Historical queue categories and audit rows are preserved; removed provider integrations are not automatically recreated.
 
-    git clone <your-repo-url> herald-angel
-    cd herald-angel
+## Project authority and licences
 
-    python3 -m venv .venv
-    source .venv/bin/activate
+**GitHub is authoritative** for development, issues, pull requests, tags and releases. **Codeberg is a source mirror only.** Operators manage remotes and disable duplicate collaboration surfaces separately. Final repository URLs and the later RottenLabz organisation transfer are operator decisions; none are assumed here.
 
-    pip install -r requirements.txt
+Original project source uses the [MIT licence](LICENSE), copyright 2026 RottenLabz. See [privacy](PRIVACY.md), [third-party notices](THIRD_PARTY_NOTICES.md), and [release history](CHANGELOG.md).
 
-    cp .env.example .env
-    nano .env
-
-    python bot.py
-
-For a more complete setup, see:
-
-- docs/INSTALL.md
-- docs/CONFIGURATION.md
-- docs/SECURITY.md
-
-## Discord setup overview
-
-Your Discord bot will need these intents enabled in the Discord Developer Portal:
-
-- Server Members Intent
-- Message Content Intent
-
-Suggested bot permissions:
-
-- View Channels
-- Send Messages
-- Embed Links
-- Read Message History
-- Manage Roles, only if using subscription buttons
-- Use External Emojis, optional
-- Attach Files, optional
-
-Keep Herald Angel's bot role below admin/mod/staff roles.
-
-## Common owner commands
-
-Commands are normally sent to Herald Angel by DM.
-
-Default command prefix:
-
-    herald
-
-Useful commands:
-
-    herald status
-    herald welcome test
-    herald runtime
-    herald subs panel
-    herald watch status
-    herald discover
-    herald run once
-    herald deliver pending
-    herald held
-    herald pending
-    herald posted
-    herald failed
-    herald post <id>
-    herald post held <number>
-    herald promote <id>
-    herald skip <id>
-    herald retry failed
-    herald audit verify
-    herald audit recent [number]
-    herald audit summary
-    herald audit item <id>
-    herald clean [number]
-    herald help
-
-## Configuration
-
-Herald Angel reads configuration from .env in the project root.
-
-Important settings include:
-
-    DISCORD_TOKEN=
-    OWNER_ID=
-
-    HERALD_DM_COMMANDS_ENABLED=true
-    HERALD_OWNER_ONLY=true
-    HERALD_SERVER_COMMANDS_ENABLED=false
-    HERALD_GUILD_ID=0
-
-    FREE_GAMES_ENABLED=true
-    GPU_UPDATES_ENABLED=true
-    TWITCH_ENABLED=false
-    SECURITY_ENABLED=false
-
-    FREE_GAMES_CHANNEL_NAME=free-games
-    GPU_UPDATES_CHANNEL_NAME=gpu-updates
-    STREAM_ALERTS_CHANNEL_NAME=stream-alerts
-    SECURITY_ALERTS_CHANNEL_NAME=security-alerts
-    WELCOME_CHANNEL_NAME=welcome
-    SUBSCRIPTIONS_CHANNEL_NAME=subscriptions
-
-See docs/CONFIGURATION.md for the full configuration guide.
-
-## Backups
-
-The included helper creates a public-safe source backup that excludes secrets, runtime data, virtual environments, Git history, logs, caches, databases, and previous backups.
-
-    chmod +x backup-noenv.sh
-    ./backup-noenv.sh
-
-Do not commit generated backup archives.
-
-## Security notes
-
-Do not publish:
-
-- .env
-- Discord tokens
-- Twitch client secrets
-- SQLite runtime databases
-- logs
-- .venv
-- generated backup archives
-
-The local audit trail is useful for operational visibility, but it is not tamper-proof against an administrator with filesystem/database access.
-
-See docs/SECURITY.md.
-
-## Acknowledgements and data sources
-
-Herald Angel can integrate with public APIs/RSS feeds and Discord services, including:
-
-- Discord, via the Discord API and discord.py.
-- GamerPower, for free game giveaway data.
-- Guru3D, for GPU driver/update RSS items.
-- Twitch, via Twitch Helix, when Twitch alerts are enabled.
-- Public security RSS feeds such as CISA, BleepingComputer, and UK NCSC, only when the optional security module is enabled.
-
-Herald Angel is an independent self-hosted project and is not affiliated with, endorsed by, or sponsored by Discord, GamerPower, Guru3D, Twitch, CISA, BleepingComputer, UK NCSC, or any other feed/source provider.
-
-## Licence
-
-MIT License. See LICENSE.
+RottenLabz Herald is independently developed and is not affiliated with, sponsored by, or endorsed by Discord or GamerPower. Their names describe interoperability only.

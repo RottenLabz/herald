@@ -1,176 +1,102 @@
-# Herald Angel Installation Guide
+# Install RottenLabz Herald
 
-This guide describes a basic self-hosted install of Herald Angel.
+These instructions describe a **new, operator-approved Linux installation**, not an in-place upgrade of an existing private service. Existing deployments must first use [PRIVATE_VPS_MIGRATION_NOTES.md](../PRIVATE_VPS_MIGRATION_NOTES.md). Decide and approve the new service account and directories before creating them. Reuse existing suitable paths where practical.
 
-## Supported install target
+Use a supported Linux release, Python 3.12 or newer, Git, and a supported real `discord.py` 2.x release. Complete the dependency release gates before production use. A constrained installation that cannot resolve must stop; do not relax the security floors to force it through.
 
-These instructions are written for Ubuntu/Debian-style Linux.
+## Discord application
 
-Recommended hosting:
+In the Discord Developer Portal, create/select your application and bot; retain the token privately. Invite it with the `bot` and `applications.commands` scopes. Grant View Channel, Send Messages, Embed Links and Read Message History in destination channels. Grant Manage Roles only when subscription controls are used. Place the bot role above harmless notification roles and below staff roles; do not grant Administrator.
 
-- A small VPS.
-- An always-on Linux server.
-- A homelab machine that stays online.
+Enable the Members intent for member welcomes/subscription member handling and Message Content intent for the retained text/DM transport as required by your application settings. Run `/herald doctor` in the intended guild after login to check actual channel, role and command-registration state.
 
-Herald Angel can be run manually for testing, but for normal use it is best hosted 24/7 so feed checks, Twitch alerts, welcome messages, and subscription buttons remain available.
+## Source and account preparation
 
-Windows and macOS may work with manual changes, but they are not the primary documented install targets yet.
+Obtain the reviewed source from the authoritative GitHub project or a verified source archive. Select the real repository URL yourself; this guide does not invent a remote. Deploy the selected, tested commit into `/opt/rottenlabz-herald`. Root or a separate deployer must own that source and the virtual environment; the `herald` process must not be able to modify them.
 
-## 1. Create a Discord bot
+**VPS, administrator shell — new-install example only:**
 
-In the Discord Developer Portal:
+```bash
+sudo useradd --system --user-group --home-dir /var/lib/rottenlabz-herald --no-create-home --shell /usr/sbin/nologin herald
+sudo install -d -o root -g root -m 0755 /opt/rottenlabz-herald
+sudo install -d -o root -g root -m 0700 /etc/rottenlabz-herald
+sudo install -d -o herald -g herald -m 0700 /var/lib/rottenlabz-herald
+```
 
-1. Create an application.
-2. Create a bot user.
-3. Copy the bot token.
-4. Enable these privileged gateway intents:
-   - Server Members Intent
-   - Message Content Intent
+Skip account creation if the dedicated account already exists and verify its purpose/ownership. Do not recursively change ownership of an existing private checkout without assessing it.
 
-Keep the token private. Do not commit it to Git.
+## Dependencies
 
-## 2. Invite the bot to your server
+Resolve and test in the clean release environment described in [RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md). Once the source has been deployed, install the approved hash-locked runtime requirements into `/opt/rottenlabz-herald/.venv`. The candidate contains version ranges and audited minimum constraints, **not a validated exact release lock**. Never use the system Python package environment as the application environment.
 
-Suggested permissions:
+For candidate qualification only, from the existing reviewed source checkout:
 
-- View Channels
-- Send Messages
-- Embed Links
-- Read Message History
-- Manage Roles, if using subscription buttons
-- Use External Emojis, optional
-- Attach Files, optional
+**Linux test console:**
 
-Keep the Herald Angel bot role below admin, mod, and staff roles.
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip check
+.venv/bin/python -m unittest discover -s tests -v
+```
 
-## 3. Clone and install
+A real release also needs the dependency audit, inventory, SBOM and connected Discord tests in the checklist. Review/create `.venv` only in the designated test/deployment workspace.
 
-    git clone <your-repo-url> herald-angel
-    cd herald-angel
+## Protect `.env` before adding secrets
 
-    python3 -m venv .venv
-    source .venv/bin/activate
+Run the following only when the destination environment file does **not** already exist. The `install` command creates it with restrictive ownership/mode before any real credential is added.
 
-    pip install -r requirements.txt
+**VPS, administrator shell:**
 
-## 4. Configure .env
+```bash
+cd /opt/rottenlabz-herald
+sudo test ! -e /etc/rottenlabz-herald/.env
+sudo install -o root -g root -m 0600 .env.example /etc/rottenlabz-herald/.env
+sudoedit /etc/rottenlabz-herald/.env
+```
 
-    cp .env.example .env
-    nano .env
+Run each line separately and stop if the existence check fails. Use your configured editor (including VS Code through a suitable administrative editing workflow) to set the token and IDs. Never paste credentials into terminal commands or print the file for verification. The root systemd manager reads `EnvironmentFile`; the service user need not read the file directly.
 
-Required settings:
+Set at least:
 
-    DISCORD_TOKEN=your_discord_bot_token
-    OWNER_ID=your_discord_user_id
+```dotenv
+DISCORD_TOKEN=
+OWNER_ID=0
+HERALD_GUILD_ID=0
+HERALD_DB_PATH=/var/lib/rottenlabz-herald/herald.db
+HERALD_FEED_CONFIG_PATH=/var/lib/rottenlabz-herald/feeds.json
+FREE_GAMES_CHANNEL_ID=0
+```
 
-For a single-server install, the default is sufficient:
+Replace `OWNER_ID`, `HERALD_GUILD_ID`, and the destination ID with your actual IDs before starting. Use a real nonzero target guild ID for slash registration and deliberate server targeting. Set `HERALD_BUILD_ID` to the reviewed deployment commit without shelling out from the bot. Leave `HERALD_PRIVATE_PROVIDERS=[]` unless trusted private modules have been separately reviewed.
 
-    HERALD_GUILD_ID=0
+**VPS, administrator shell — metadata checks without displaying values:**
 
-If the bot is connected to more than one Discord server, set this to the ID of
-the one server Herald should use. Herald will otherwise refuse ambiguous alert
-delivery rather than choosing a server by list order.
+```bash
+sudo stat -c '%a %U:%G %n' /etc/rottenlabz-herald /etc/rottenlabz-herald/.env
+sudo -u herald test ! -w /opt/rottenlabz-herald/bot.py
+sudo -u herald test -w /var/lib/rottenlabz-herald
+```
 
-Recommended first-run safety settings:
+Expected modes are `700 root:root` for the configuration directory and `600 root:root` for `.env`. In a local development checkout use `install -m 0600 .env.example .env` **only for a new file**, then edit it. Do not copy secrets into a permissively created file and fix permissions afterward.
 
-    HERALD_DM_COMMANDS_ENABLED=true
-    HERALD_OWNER_ONLY=true
-    HERALD_REPLY_TO_NON_OWNER_DMS=false
-    HERALD_SERVER_COMMANDS_ENABLED=false
-    HERALD_STARTUP_BACKLOG_MODE=held
+## Service
 
-Recommended module defaults for a gaming-focused install:
+Review every path and use [systemd/rottenlabz-herald.service.example](../systemd/rottenlabz-herald.service.example). `ProtectHome=true` intentionally prevents the `/home` private deployment from working unchanged. `ProtectSystem=strict` allows application writes only beneath the configured runtime directory; logs go to the journal.
 
-    FREE_GAMES_ENABLED=true
-    GPU_UPDATES_ENABLED=true
-    TWITCH_ENABLED=false
-    SECURITY_ENABLED=false
+**VPS, administrator shell:**
 
-## 5. Create Discord channels
+```bash
+sudo install -o root -g root -m 0644 systemd/rottenlabz-herald.service.example /etc/systemd/system/rottenlabz-herald.service
+sudo systemd-analyze verify /etc/systemd/system/rottenlabz-herald.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now rottenlabz-herald.service
+sudo systemctl status rottenlabz-herald.service --no-pager
+```
 
-Core/default channel names:
+Only run enable/start after configuration, permissions and dependency checks pass. Verify login, `/herald doctor`, owner/non-owner authorization, harmless subscriptions, preview, and one controlled post in a test channel. Then verify audit state and restart recovery. This build did not carry out those live actions.
 
-    #welcome
-    #subscriptions
-    #free-games
-    #gpu-updates
+## Updating
 
-Create optional channels only for modules you enable:
-
-    #stream-alerts
-    #security-alerts
-
-You can change all channel names in .env.
-
-## 6. Optional subscription roles
-
-If you use the subscription panel, create roles for the modules you enable:
-
-    Free Games
-    GPU Updates
-    Stream Alerts      # only when Twitch is enabled
-    Security Alerts    # only when security is enabled
-
-Only use harmless notification/viewer roles.
-
-Do not map subscription buttons to admin, mod, staff, or privileged roles.
-
-## 7. Run manually
-
-    source .venv/bin/activate
-    python bot.py
-
-Then DM the bot:
-
-    herald status
-    herald welcome test
-    herald runtime
-    herald help
-
-## 8. systemd service
-
-A sample service file is included at:
-
-    systemd/herald-angel.service.example
-
-The sample is hardened for an installation under /opt/herald-angel using a dedicated herald service account. Ensure the configured WorkingDirectory, ExecStart, ReadWritePaths, user, group, and writable data/log/backup directories all exist and match your deployment. ProtectHome=true will deliberately block a project kept under /home unless you redesign the unit.
-
-Copy it to /etc/systemd/system/herald-angel.service, review every path/user value, then run:
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable herald-angel
-    sudo systemctl start herald-angel
-    sudo systemctl status herald-angel --no-pager
-
-## 9. Test commands
-
-DM the bot:
-
-    herald status
-    herald welcome test
-    herald runtime
-    herald discover
-    herald watch status
-    herald audit verify
-
-To post the subscription panel:
-
-    herald subs panel
-
-## 10. Updating
-
-Stop the service, pull changes, update dependencies if needed, then restart.
-
-    cd ~/herald-angel
-    sudo systemctl stop herald-angel
-
-    git pull
-
-    source .venv/bin/activate
-    pip install -r requirements.txt
-
-    python -m py_compile config.py subscriptions.py bot.py storage.py watchers.py providers/twitch.py providers/gamerpower.py providers/guru3d.py providers/security.py
-    python -m unittest discover -s tests -v
-
-    sudo systemctl start herald-angel
-    sudo systemctl status herald-angel --no-pager
+Stop the service before replacing application files or migrating its database. Back up consistent private state and reviewed source first. Deploy the reviewed commit and approved runtime dependencies using the deployer account. Preserve `/etc` and `/var/lib` data. Run tests and a copy-of-database migration/integrity/audit check before starting the upgraded service. Rollback requires the matching pre-migration database plus old source/environment, not merely an old Python file.

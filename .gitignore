@@ -1,10 +1,13 @@
-# Secrets
+# Private configuration; the public template is deliberately retained.
 .env
 .env.*
 !.env.example
+*.env
 
-# Python
+# Python / tooling
 .venv/
+venv/
+env/
 __pycache__/
 *.pyc
 *.pyo
@@ -12,14 +15,38 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
 
-# Runtime data
+# Runtime data. Place custom runtime filenames under data/ or outside source.
 data/
 logs/
 backups/
+runtime/
 *.db
 *.sqlite
 *.sqlite3
+*-wal
+*-shm
+*-journal
+*.instance.lock
+*.log
+*.pem
+*.key
+id_rsa
+id_ed25519
+id_ecdsa
+
+# Generated release evidence/source exports (kept privately outside source).
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.sha256
+.herald-export-*
+release-inventory.json
+release-sbom.json
+release-audit.json
+requirements-release.lock
 
 # OS/editor
 .DS_Store

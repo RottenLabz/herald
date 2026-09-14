@@ -14,6 +14,7 @@ if AVAILABLE:
     import config
     import storage
     import provider_runtime
+    import slash_commands
     from providers.common import normalize_item
     from delivery import DeliveryCoordinator
     from presentation import escape_provider_text
@@ -29,6 +30,7 @@ class BotIntegrationTests(unittest.IsolatedAsyncioTestCase):
                   (config, "HERALD_PRIVATE_PROVIDERS", []),
                   (config, "FREE_GAMES_CHANNEL_ID", 202), (config, "FREE_GAMES_ROLE_ID", 0),
                   (config, "FREE_GAMES_ENABLED", True), (config, "HERALD_GUILD_ID", 303),
+                  (config, "OWNER_ID", 101), (config, "HERALD_COMMAND_SCOPE", "guild"),
                   (bot, "HERALD_GUILD_ID", 303), (bot, "OWNER_ID", 101)]
         for module, name, value in values:
             handle = patch.object(module, name, value)
@@ -68,6 +70,27 @@ class BotIntegrationTests(unittest.IsolatedAsyncioTestCase):
                              bot.deliver_pending_items_once())
         self.channel.send.assert_awaited_once()
         self.assertEqual(storage.get_item_by_id(self.row["id"])["status"], "posted")
+
+    def owner_interaction(self):
+        return SimpleNamespace(user=SimpleNamespace(id=101), guild_id=303, guild=self.guild,
+                               response=SimpleNamespace(is_done=Mock(return_value=True)),
+                               followup=SimpleNamespace(send=AsyncMock()))
+
+    async def test_actual_dm_and_slash_post_share_claim(self):
+        client = discord.Client(intents=discord.Intents.none())
+        self.addAsyncCleanup(client.close)
+        tree = slash_commands.install_commands(client, bot)
+        command = tree.get_command("herald", guild=discord.Object(id=303)).get_command("queue").get_command("post")
+        message = SimpleNamespace(author=SimpleNamespace(id=101), guild=None,
+                                  channel=SimpleNamespace(send=AsyncMock()))
+        await asyncio.gather(bot.handle_owner_command(message, f"post {self.row['id']}"),
+                             command.callback(self.owner_interaction(), self.row["id"]))
+        self.channel.send.assert_awaited_once()
+
+    async def test_actual_review_and_automatic_post_share_claim(self):
+        view = slash_commands.QueueReviewView(bot, self.row)
+        await asyncio.gather(view.post.callback(self.owner_interaction()), bot.deliver_pending_items_once())
+        self.channel.send.assert_awaited_once()
 
     async def test_payload_preparation_failure_does_not_block_next(self):
         second = storage.upsert_item({**self.item, "external_id": "two", "url": "https://example.com/two"}, status="pending")

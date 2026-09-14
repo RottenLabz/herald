@@ -1,0 +1,39 @@
+[Unit]
+Description=RottenLabz Herald Discord announcement bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=herald
+Group=herald
+WorkingDirectory=/var/lib/rottenlabz-herald
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/rottenlabz-herald/.env
+ExecStart=/opt/rottenlabz-herald/.venv/bin/python /opt/rottenlabz-herald/bot.py
+Restart=on-failure
+RestartSec=10
+UMask=0077
+StateDirectory=rottenlabz-herald
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/rottenlabz-herald
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+StandardOutput=journal
+StandardError=journal
+
+# Application/venv in /opt must be owned by root or a separate deployer.
+# Trusted private modules may be read from an operator-approved /opt path;
+# source and plugins must not be writable by the herald account.
+# All configured DB/feed/runtime paths must lie beneath ReadWritePaths.
+
+[Install]
+WantedBy=multi-user.target

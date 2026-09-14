@@ -1,124 +1,53 @@
-# Herald Angel Security Notes
+# RottenLabz Herald security and source exports
 
-Herald Angel is a self-hosted Discord bot. The server owner/operator is responsible for protecting tokens, configuration, logs, and runtime data.
+The operator controls the host, Discord credentials, permitted content sources and trusted local provider code. Protect that boundary. The application cannot protect its secrets or audit history from an administrator who already controls its files/process.
 
-## Never commit secrets
+## Commands and roles
 
-Do not commit:
+Privileged operations always require the configured `OWNER_ID`. `HERALD_OWNER_ONLY` is a deprecated compatibility value and cannot disable this check. Invalid/blank booleans fail at configuration loading. Legacy server text commands default off; enabling them retains owner and target-guild checks. Global slash registration does not grant authority in other guilds.
 
-- .env
-- Discord bot tokens
-- Twitch client secrets
-- SQLite databases
-- logs
-- virtual environments
-- generated backup archives
-- private keys
+New subscription panels use configured source role IDs and enforce target guild, role existence/uniqueness, Manage Roles, hierarchy and dangerous-permission rejection. Use harmless notification roles only, below the bot role and below staff. Provider display text is escaped, and allowed mentions are restricted to the intended configured role where applicable; provider input must not authorize arbitrary mentions.
 
-The public .env.example should contain placeholders only.
+## Content and delivery
 
-## Discord token safety
+Approval binds to material content revisions. Every delivery path claims/reloads the current item through the same coordinator. Once a send is in flight, an owner cancellation must report that state honestly. A remotely accepted message followed by a local crash creates an uncertain result: inspect the destination before explicitly resolving it. Automatic retry is reserved for known safe failures; `uncertain` never silently reposts.
 
-If your Discord token is ever exposed:
+Provider responses are untrusted data. Bounds and worker termination isolate malformed/slow retrieval; a separate delivery task can continue delivering queued records. Trusted local plugins remain privileged code, not untrusted sandboxed extensions. Never configure code downloaded automatically from a feed or allow an untrusted account to edit source/plugins.
 
-1. Regenerate it in the Discord Developer Portal.
-2. Update your private .env.
-3. Restart Herald Angel.
-4. Check Git history and backups for leaks.
+## Files and tokens
 
-## Command safety
+Create `.env` with `0600` before entering credentials. The hardened service uses a root-owned `/etc` environment file, non-writable `/opt` application code/venv and a dedicated user with writable `/var/lib/rottenlabz-herald` state. `UMask=0077` restricts new runtime files but does not fix preexisting permissions. Keep real configuration, private plugins, databases, SQLite sidecars, logs, caches and backups outside tracked public source. Herald holds a process lease at the canonical database path plus `.instance.lock`; never delete that lock file while any instance runs. A second instance must fail closed.
 
-Recommended defaults:
+If a Discord token is exposed, regenerate it in the Developer Portal, replace it privately and restart. Assess source history, published artifacts and backups; deleting one working file does not retract old copies. Do not paste secrets into public issues or diagnostic output.
 
-    HERALD_DM_COMMANDS_ENABLED=true
-    HERALD_OWNER_ONLY=true
-    HERALD_REPLY_TO_NON_OWNER_DMS=false
-    HERALD_SERVER_COMMANDS_ENABLED=false
+## Reviewed committed-source exporter
 
-This keeps Herald controlled through owner DMs and avoids normal server-channel command use.
+`approved-source-manifest.txt` is an explicit reviewed file list, not a filename glob. When public source files are added/removed, review the actual content and update this manifest in the same change. Never regenerate it blindly from an arbitrary private checkout.
 
-## Server targeting safety
+The exporter requires Git and Python 3.12+. It reads regular committed Git blobs from `HEAD`; tracked index/working-tree changes cause failure. It excludes untracked files, real environment files, configured runtime paths, private provider roots, database header signatures and SQLite sidecars. It retains the public `.env.example`. Unexpected tracked files require manifest review. Symlinks, submodules, unsafe paths, binary source and excessive files fail closed.
 
-For a normal single-server install:
+Runtime `.env` is parsed as data, **never shell-sourced**. Supply `--env-file` if the runtime configuration is outside the checkout and not already supplied through `HERALD_ENV_PATH`/process environment. Standard single-line assignments/quoting are supported; complex/multiline syntax or unresolved runtime path expansion is refused. Set explicit absolute runtime paths for exports of systemd layouts. Do not run `source .env` as an export workaround.
 
-    HERALD_GUILD_ID=0
+The built-in scanner checks credential assignments, private-key markers, common Discord/GitHub/API token patterns, and credential-bearing URLs. Any read/scanner/Git/verification failure stops the export. These checks cannot prove absence of every secret, private identifier or copyrighted content: manual source review remains mandatory. Never silence scanner errors or interpret a missing scanner's exit status as success.
 
-If the bot is connected to more than one Discord server, set
-`HERALD_GUILD_ID` to the intended server. Herald then scopes alert channels,
-subscription panels, role pings, and welcome tests to that server. Without an
-explicit target in a multi-server connection, delivery fails closed.
+**Linux release console, existing clean reviewed checkout — select an existing output directory:**
 
-## Mention safety
+```bash
+python3 source_export.py --check
+python3 source_export.py --output ../rottenlabz-herald-source.tar.gz
+python3 source_export.py --verify ../rottenlabz-herald-source.tar.gz
+```
 
-Herald sanitises provider-controlled text before posting.
+The sidecar names the archive basename. From the archive's parent directory, run `sha256sum -c rottenlabz-herald-source.tar.gz.sha256`. The output/sidecar names must not already exist; no output directories are created. The archive is first created privately, verified member-by-member against the scanned committed bytes, and only then published without overwriting an existing path. Failure removes partial output. The compatibility entry point accepts the same options:
 
-Non-stream categories use no allowed mentions.
+```bash
+./backup-noenv.sh --output ../rottenlabz-herald-source.tar.gz
+```
 
-Twitch stream alerts may ping only the configured alert role when enabled.
+A source archive excludes **all untracked and uncommitted private modifications**. It cannot substitute for inspecting a private VPS's custom code, trusted modules, configuration and persistent data before migration. Make separate private, consistent database/configuration backups, protect them and verify their restore plan. Never upload those backups as a public source export.
 
-Avoid enabling broad mention behaviour.
+## Audit limitations and reporting
 
-## Subscription role safety
+The audit trail is a local append-only-style hash chain. Verification detects inconsistency relative to its own recorded chain; a host administrator can replace/delete it. It is not immutable, legally certified or tamper-proof. See [PRIVACY.md](../PRIVACY.md) for retention/deletion limitations.
 
-Subscription buttons can add/remove roles.
-
-Only use harmless notification/viewer roles such as:
-
-    Free Games
-    GPU Updates
-    Stream Alerts
-    Security Alerts
-
-Do not use:
-
-- Admin roles
-- Mod roles
-- Staff roles
-- Privileged roles
-- Roles with dangerous channel or server permissions
-
-Keep Herald Angel's bot role below staff/admin roles.
-
-## Provider/feed safety
-
-External feeds can contain unexpected text, URLs, images, or malformed data.
-
-Herald uses provider isolation so one provider failure should not stop the whole discovery cycle.
-
-Provider-controlled display text is sanitised before Discord posting, but server operators should still review their feed sources.
-
-## Audit trail wording
-
-Herald includes a local append-only-style audit trail with hash-chain verification.
-
-This is useful for detecting accidental or basic tampering within the local database history.
-
-It is not tamper-proof.
-
-A server administrator with filesystem/database access can delete, replace, or edit the database.
-
-Do not describe the audit system as legally reliable, immutable, or tamper-proof.
-
-## Backups
-
-Use the included NOENV helper:
-
-    ./backup-noenv.sh
-
-The generated archive should exclude:
-
-- .env
-- .git
-- .venv
-- runtime databases
-- logs
-- caches
-- previous backups
-
-Do not commit generated backup archives.
-
-## Reporting security issues
-
-For now, report security issues through the repository issue tracker or the maintainer's preferred contact method.
-
-Do not post live tokens, secrets, or private server data in public issues.
+Use the authoritative GitHub repository's documented security-contact route once configured. If no private reporting route is published, ask the maintainer for one without posting exploit secrets or live private data. Do not create duplicate reports in the Codeberg mirror.

@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import discord
+from presentation import format_published_at
+from delivery import DeliveryCoordinator
+from storage import recover_interrupted_claims
 
 from subscriptions import (
     SubscriptionView,
@@ -353,36 +356,6 @@ def sanitized_item_for_post(item: dict) -> dict:
     return cleaned    
 
 
-def format_published_at(value: str) -> str:
-    value = (value or "").strip()
-
-    if not value:
-        return ""
-
-    dt = None
-
-    try:
-        raw = value.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(raw)
-    except Exception:
-        dt = None
-
-    if dt is None:
-        try:
-            dt = parsedate_to_datetime(value)
-        except Exception:
-            dt = None
-
-    if dt is None:
-        return value[:100]
-
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-
-    dt = dt.astimezone(timezone.utc)
-    return dt.strftime("%d %b %Y, %H:%M UTC")
-
-
 def build_free_game_embed(item: dict) -> discord.Embed:
     title = item.get("title") or "Free game"
     url = item.get("url") or ""
@@ -627,119 +600,49 @@ def build_post_payload_for_item(
     return f"{emoji('herald')} **Herald Update**", embed
 
 
-async def post_item_to_discord(item: dict) -> tuple[bool, str]:
-    channel_name = target_channel_name_for_item(item)
-
-    if not channel_name:
-        return False, f"No target channel configured for category `{item.get('category')}`."
-
+def prepare_delivery(item: dict):
     guild = configured_guild()
-
     if guild is None:
-        return False, configured_guild_error()
+        raise ValueError("target_guild_unavailable")
+    channel_name = target_channel_name_for_item(item)
+    channel = find_text_channel_by_name(guild, channel_name)
+    if channel is None:
+        raise ValueError("destination_unavailable")
+    content, embed = build_post_payload_for_item(item, guild)
+    return channel, content, embed, allowed_mentions_for_item(item, guild)
 
-    target_channel = find_text_channel_by_name(guild, channel_name)
 
-    if target_channel is None:
-        return False, f"Could not find target channel `#{channel_name}`."
+async def send_delivery(item: dict, payload):
+    channel, content, embed, mentions = payload
+    sent = await channel.send(content=content[:1900], embed=embed, allowed_mentions=mentions)
+    return str(sent.id)
 
-    content, embed = build_post_payload_for_item(item, target_channel.guild)
 
-    try:
-        sent = await target_channel.send(
-            content=content[:1900],
-            embed=embed,
-            allowed_mentions=allowed_mentions_for_item(item, target_channel.guild),
-        )
-        return True, str(sent.id)
+delivery_coordinator = DeliveryCoordinator(prepare_delivery, send_delivery)
 
-    except discord.Forbidden:
-        return False, f"Missing permission to post in `#{channel_name}`."
 
-    except Exception as e:
-        return False, str(e)
+async def post_item_to_discord(item: dict) -> tuple[bool, str]:
+    result = await delivery_coordinator.deliver_one(
+        int(item["id"]), approve=True, actor="owner", expected_revision=item.get("revision")
+    )
+    detail = result.get("message_id") or (
+        f"{result.get('current_status', result['status'])}: {result.get('error', '')}"
+    )
+    return result["status"] == "posted", str(detail)
 
 
 async def deliver_pending_items_once(limit: int = HERALD_POST_BATCH_LIMIT) -> dict:
-    stats = {
-        "checked": 0,
-        "posted": 0,
-        "failed": 0,
-        "missing": 0,
-    }
-
-    items = pending_items(limit)
-
-    for item in items:
-        stats["checked"] += 1
-        item_id = int(item.get("id") or 0)
-
-        if not item_id:
-            stats["missing"] += 1
-            continue
-
-        ok, detail = await post_item_to_discord(item)
-
-        if ok:
-            mark_posted(item_id, detail)
-            stats["posted"] += 1
-        else:
-            mark_failed(item_id, detail)
-            stats["failed"] += 1
-
+    stats = await delivery_coordinator.deliver_batch(limit=limit, actor="automatic")
     WATCHER_RUNTIME["last_delivery"] = stats
     return stats
 
 
 async def post_held_items_once(limit: int = 5, max_limit: int = 20) -> dict:
-    limit = int(limit)
-
-    if limit <= 0:
-        return {
-            "checked": 0,
-            "posted": 0,
-            "failed": 0,
-            "missing": 0,
-            "error": "Limit must be greater than zero.",
-        }
-
-    if limit > max_limit:
-        return {
-            "checked": 0,
-            "posted": 0,
-            "failed": 0,
-            "missing": 0,
-            "error": f"Safety cap is {max_limit} held items at once.",
-        }
-
-    stats = {
-        "checked": 0,
-        "posted": 0,
-        "failed": 0,
-        "missing": 0,
-        "error": "",
-    }
-
-    items = held_items(limit)
-
-    for item in items:
-        stats["checked"] += 1
-        item_id = int(item.get("id") or 0)
-
-        if not item_id:
-            stats["missing"] += 1
-            continue
-
-        ok, detail = await post_item_to_discord(item)
-
-        if ok:
-            mark_posted(item_id, detail)
-            stats["posted"] += 1
-        else:
-            mark_failed(item_id, detail)
-            stats["failed"] += 1
-
-    return stats
+    if not 1 <= int(limit) <= max_limit:
+        return {"error": f"Limit must be between 1 and {max_limit}."}
+    return await delivery_coordinator.deliver_batch(
+        limit=int(limit), approve=True, status="held", actor="owner"
+    )
 
 
 async def run_watcher_cycle(first_run: bool = False) -> dict:
@@ -1344,13 +1247,11 @@ async def handle_owner_command(message: discord.Message, body: str):
         ok, detail = await post_item_to_discord(item)
 
         if ok:
-            mark_posted(item_id, detail)
             await send_long(
                 message.channel,
                 f"Posted Herald item `{item_id}` successfully. Discord message ID: `{detail}`",
             )
         else:
-            mark_failed(item_id, detail)
             await send_long(
                 message.channel,
                 f"Failed to post Herald item `{item_id}`: `{detail}`",
@@ -1384,6 +1285,7 @@ async def on_ready():
     init_db()
 
     if not persistent_view_registered:
+        recover_interrupted_claims()
         client.add_view(SubscriptionView(register_all=True))
         persistent_view_registered = True
 

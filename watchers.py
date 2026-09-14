@@ -271,6 +271,7 @@ def skip_items(item_ids: list[int]) -> dict:
         "requested": len(unique_ids),
         "skipped": 0,
         "not_found": [],
+        "blocked": [],
     }
 
     for item_id in unique_ids:
@@ -282,7 +283,11 @@ def skip_items(item_ids: list[int]) -> dict:
         ):
             stats["skipped"] += 1
         else:
-            stats["not_found"].append(item_id)
+            current = get_item_by_id(item_id)
+            if current is None:
+                stats["not_found"].append(item_id)
+            else:
+                stats["blocked"].append({"id": item_id, "status": current["status"]})
 
     return stats
 
@@ -302,17 +307,17 @@ def skip_range(start_id: int, end_id: int, max_count: int = 200) -> dict:
     if end_id < start_id:
         start_id, end_id = end_id, start_id
 
-    item_ids = list(range(start_id, end_id + 1))
+    count = end_id - start_id + 1
 
-    if len(item_ids) > max_count:
+    if count > max_count:
         return {
-            "requested": len(item_ids),
+            "requested": count,
             "skipped": 0,
             "not_found": [],
             "error": f"Range too large. Maximum is {max_count} items at once.",
         }
 
-    return skip_items(item_ids)
+    return skip_items(list(range(start_id, end_id + 1)))
 
 
 def skip_held_items(limit: int | None = None, max_count: int = 500) -> dict:
@@ -365,6 +370,8 @@ def format_skip_stats(stats: dict) -> str:
         extra = "" if len(not_found) <= 25 else f" and {len(not_found) - 25} more"
         lines.append(f"Not found: `{preview}{extra}`")
 
+    for blocked in stats.get("blocked", [])[:25]:
+        lines.append(f"Not skipped: item `{blocked['id']}` is `{blocked['status']}`; in-flight/final states require inspection.")
     return "\n".join(lines)
 
 

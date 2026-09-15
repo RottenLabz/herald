@@ -2,7 +2,7 @@
 
 These instructions describe a **new, operator-approved Linux installation**, not an in-place upgrade of an existing private service. Existing deployments must first use [PRIVATE_VPS_MIGRATION_NOTES.md](../PRIVATE_VPS_MIGRATION_NOTES.md). Decide and approve the new service account and directories before creating them. Reuse existing suitable paths where practical.
 
-Use a supported Linux release, Python 3.12 or newer, Git, and a supported real `discord.py` 2.x release. Complete the dependency release gates before production use. A constrained installation that cannot resolve must stop; do not relax the security floors to force it through.
+The primary v1.0.0 deployment target is a supported Linux x86_64 release with **Python 3.12**, Git, and the hash-locked runtime shipped with this source. Newer Python versions or different platform closures must be qualified separately. A constrained installation that cannot install the reviewed lock must stop; do not relax hashes or security floors to force it through.
 
 ## Discord application
 
@@ -27,21 +27,18 @@ Skip account creation if the dedicated account already exists and verify its pur
 
 ## Dependencies
 
-Resolve and test in the clean release environment described in [RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md). Once the source has been deployed, install the approved hash-locked runtime requirements into `/opt/rottenlabz-herald/.venv`. The candidate contains version ranges and audited minimum constraints, **not a validated exact release lock**. Never use the system Python package environment as the application environment.
+For the supported Linux/Python 3.12 release target, install the reviewed exact lock `RottenLabz_Herald_v1.0_Linux_Py312.lock.txt` with hash enforcement. `requirements.txt` is the direct-range manifest used for development and separately qualified platforms; it is not a substitute for the release lock. Never use the system Python package environment as the application environment.
 
-For candidate qualification only, from the existing reviewed source checkout:
-
-**Linux test console:**
+**Linux release/deployment console:**
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install --require-hashes -r RottenLabz_Herald_v1.0_Linux_Py312.lock.txt
 .venv/bin/python -m pip check
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-A real release also needs the dependency audit, inventory, SBOM and connected Discord tests in the checklist. Review/create `.venv` only in the designated test/deployment workspace.
+The exact lock was generated and independently installed/tested in a clean Python 3.12 Linux environment before the final release-identity patch. The final candidate must repeat the release gates in [RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md), including current vulnerability audit and SBOM generation. Review/create `.venv` only in the designated test/deployment workspace.
 
 ## Protect `.env` before adding secrets
 

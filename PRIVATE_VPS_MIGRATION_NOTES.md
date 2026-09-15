@@ -1,4 +1,4 @@
-# Private VPS migration notes — RottenLabz Herald v0.2.0
+# Private VPS migration notes — RottenLabz Herald v1.0.0
 
 This is a plan for a later authorized migration. This build did **not** inspect, patch, stop or deploy the live private VPS. The historical private path `/home/rotten/herald-angel` and old service name `herald-angel.service` come from the July records; present state may differ. Do not assume the public v0.1.1 snapshot matches every private source/configuration change.
 
@@ -11,7 +11,7 @@ The intended destination is one public core plus protected operator `.env`, gene
 3. Save a consistent SQLite backup using SQLite's backup API (or a stopped service and a verified consistent file set), then run `PRAGMA integrity_check`. Record the schema, counts by state/category, audit event count and full audit verification result. Retain the original database and any required sidecars intact until the backup is verified.
 4. Separately save private `.env`, custom provider/code changes, feed configuration, service unit, IDs/emoji configuration and required logs with restrictive access. These private rollback artifacts contain sensitive material and must never be shared as source exports.
 5. Save reviewed clean committed public source with its checksum. The new NOENV exporter intentionally omits untracked/uncommitted private changes; inventory and privately preserve those separately. Record current source/dependency versions and the exact rollback pairing.
-6. Test the v0.2.0 migration on a **copy** of this specific private database in the operator-approved test location. Verify migration is idempotent, counts/history stay readable, posted records are not rewritten, and audit verification passes. Qualify the exact dependencies in a clean supported environment before using them on the VPS.
+6. Test the v1.0.0 migration on a **copy** of this specific private database in the operator-approved test location. Verify migration is idempotent, counts/history stay readable, posted records are not rewritten, and audit verification passes. Qualify the exact dependencies in a clean supported environment before using them on the VPS.
 
 ## Removed public providers
 
@@ -23,7 +23,7 @@ An existing private Twitch implementation can later be adapted into a trusted st
 
 ## Configuration migration
 
-| v0.1.1 setting/behavior | v0.2.0 destination/action |
+| v0.1.1 setting/behavior | v1.0.0 destination/action |
 |---|---|
 | `HERALD_NAME=Herald Angel` | Use everyday name `Herald`; public brand constant is RottenLabz Herald. |
 | `HERALD_OWNER_ONLY` | Deprecated, may be removed from private `.env`; never grants public mutation access even if false. Fix invalid/blank boolean values. |
@@ -58,4 +58,4 @@ Trusted private source may live in an already approved read-only local path acce
 - Restart during a controlled test send and confirm unresolved sends become `uncertain`, never auto-repost. Resolve them deliberately after checking Discord.
 - Verify service ownership/modes and write boundaries, inspect sanitized logs, and complete a consistent post-migration backup with integrity/audit checks.
 
-Rollback means stop v0.2.0 and restore the matching old application, dependencies/config and pre-migration database together. Never point v0.1.1 at a database upgraded by v0.2.0 and assume downgrading source alone is supported. Keep rollback artifacts private; do not delete the old installation until the operator accepts the verified result.
+Rollback means stop v1.0.0 and restore the matching old application, dependencies/config and pre-migration database together. Never point v0.1.1 at a database upgraded by v1.0.0 and assume downgrading source alone is supported. Keep rollback artifacts private; do not delete the old installation until the operator accepts the verified result.

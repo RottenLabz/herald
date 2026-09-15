@@ -1,22 +1,34 @@
 # Changelog
 
-## v0.2.0 - Unreleased
+## v1.0.0 - Unreleased
+
+### Added
+
+- Added the `/herald` slash-command namespace, owner review UI, diagnostics and source-derived subscription controls while retaining owner DM recovery commands.
+- Added generic configurable RSS/Atom sources with per-source automatic/review policy, bounded retrieval and structured health.
+- Added trusted operator-configured local provider extensions that enter the same queue/delivery pipeline.
+- Added privacy, third-party, branding and release-gate documentation plus hardened dedicated-user deployment examples.
+- Added an exact hash-locked Linux/Python 3.12 runtime file and release SBOM/audit workflow.
+- Added the official RottenLabz Herald logo as a separately licensed branding asset.
 
 ### Changed
 
-- Renamed the public project to RottenLabz Herald; the everyday bot name is Herald.
+- Renamed the public project to **RottenLabz Herald**; the everyday bot name remains **Herald**.
+- Promoted the planned foundation release from v0.2.0 to the first stable public milestone, v1.0.0. No public v0.2.0 release is claimed.
 - Unified delivery around content revisions, approval binding and durable SQLite claims; uncertain remote outcomes require owner resolution.
 - Added schema versioning and migration that preserves v0.1.1 queue/audit history.
-- Added a generic RSS/Atom source configuration with per-source automatic/review policy, bounded retrieval and structured health.
 - Kept GamerPower with an explicit attribution backlink alongside the claim link.
-- Removed bundled legacy third-party providers; trusted operator-configured local extensions can enter the same queue pipeline.
-- Added the /herald slash-command namespace, owner review UI, diagnostics and source-derived subscription controls while retaining owner DM commands.
-- Tightened owner/guild authorization, boolean parsing and subscription role permissions.
-- Added privacy/third-party notices, release gates and dedicated-user hardened deployment examples.
+- Removed bundled legacy third-party providers; historical database categories remain readable.
+- Tightened owner/guild authorization, boolean parsing, subscription role permissions, provider text escaping and source-export boundaries.
 - Replaced the denylist working-directory NOENV backup with a reviewed committed-source exporter and exact archive verifier.
-- Set GitHub as the intended development/release authority and Codeberg as source mirror only. Remote migration remains an operator task.
+- Set GitHub as the development/release authority and Codeberg as source mirror only. Remote migration remains an operator task.
 
-This entry records the foundation candidate. It is not a tag, release or deployment claim. The complete dependency resolver/integration/release gates remain mandatory.
+### Release engineering
+
+- Qualified the foundation on Windows 11 / Python 3.12 with real discord.py and on clean Linux / Python 3.12.
+- Qualified a separate clean Linux install from the exact `--require-hashes` lock.
+- Ran `pip check`, dependency vulnerability audits and CycloneDX SBOM generation for the qualified runtime.
+- Final publication still requires the post-identity full test/export gates, annotated tag review and explicit release authorization.
 
 ## v0.1.1 - 2026-07-14
 
@@ -46,4 +58,4 @@ This entry records the foundation candidate. It is not a tag, release or deploym
 
 ### Planned separately
 
-- Slash commands and command-handler refactoring are intentionally planned as a separate command UX release so the Twitch bugfix remains small and reviewable.
+- Slash commands and command-handler refactoring were intentionally deferred from v0.1.1 and are delivered by the v1.0.0 release candidate above.

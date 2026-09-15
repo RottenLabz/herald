@@ -1,18 +1,13 @@
-# Explicit reviewed public-source allowlist for RottenLabz Herald v0.2.0.
+# Explicit reviewed public-source allowlist for RottenLabz Herald v1.0.0.
 # Review content before adding a path. Never bulk-generate from a private tree.
 .env.example
 .gitattributes
 .gitignore
-CHANGELOG.md
-LICENSE
-PRIVACY.md
-PRIVATE_VPS_MIGRATION_NOTES.md
-README.md
-RELEASE_CHECKLIST.md
-THIRD_PARTY_NOTICES.md
 approved-source-manifest.txt
 backup-noenv.sh
 bot.py
+BRANDING.md
+CHANGELOG.md
 config.py
 constraints-security.txt
 delivery.py
@@ -22,13 +17,20 @@ docs/INSTALL.md
 docs/SECURITY.md
 feed_config.py
 instance_lock.py
+LICENSE
 presentation.py
+PRIVACY.md
+PRIVATE_VPS_MIGRATION_NOTES.md
 provider_runtime.py
 providers/__init__.py
 providers/common.py
 providers/gamerpower.py
 providers/rss.py
+README.md
+RELEASE_CHECKLIST.md
 requirements.txt
+RottenLabz_Herald_Logo.png
+RottenLabz_Herald_v1.0_Linux_Py312.lock.txt
 slash_commands.py
 source_export.py
 storage.py
@@ -50,5 +52,6 @@ tests/test_storage_audit_concurrency.py
 tests/test_subscription_modules.py
 tests/test_subscription_security_v020.py
 tests/test_twitch_repeat_streams.py
+THIRD_PARTY_NOTICES.md
 version.py
 watchers.py

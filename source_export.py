@@ -42,6 +42,14 @@ CREDENTIAL_ASSIGNMENT = re.compile(
 )
 PLACEHOLDERS = {"", "0", "changeme", "replace-me", "your-token-here", "example", "placeholder"}
 
+REVIEWED_BINARY_ASSETS = {
+    "RottenLabz_Herald_Logo.png": {
+        "size": 881956,
+        "sha256": "16a58aa3318e3106e028ca756bf4e3e3e2bac2b404f7fd56a91cb2907b77b329",
+        "signature": b"\x89PNG\r\n\x1a\n",
+    },
+}
+
 
 class ExportError(RuntimeError):
     """A closed export failure; messages must never include secret values."""
@@ -166,6 +174,13 @@ def configured_runtime(name: str, root: Path, paths: set[Path]) -> bool:
 def scan_content(name: str, content: bytes) -> None:
     if len(content) > MAX_FILE_BYTES:
         raise ExportError("Source file exceeds the reviewed export limit.")
+    binary = REVIEWED_BINARY_ASSETS.get(name)
+    if binary is not None:
+        digest = hashlib.sha256(content).hexdigest()
+        if (len(content) != binary["size"] or not content.startswith(binary["signature"])
+                or digest != binary["sha256"]):
+            raise ExportError("Reviewed binary asset identity mismatch; export refused.")
+        return
     if content.startswith(DB_SIGNATURES) or b"\x00" in content:
         raise ExportError("Binary or database material is not reviewed source.")
     try:

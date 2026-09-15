@@ -50,7 +50,7 @@ def fetch_bytes(url: str, *, deadline: float | None = None, session=None) -> byt
     # Streamed iter_content yields decoded bytes, including compressed responses.
     # Parent worker process enforces an absolute deadline over DNS/connect/read/parse.
     with client.get(url, stream=True, timeout=(min(CONNECT_TIMEOUT, remaining), min(READ_TIMEOUT, remaining)),
-                    allow_redirects=False, headers={"User-Agent": "RottenLabz-Herald/0.2.0"}) as response:
+                    allow_redirects=False, headers={"User-Agent": "RottenLabz-Herald/1.0.0"}) as response:
         if not 200 <= response.status_code < 300:
             raise ProviderBoundaryError(f"http_status_{response.status_code}")
         body = bytearray()

@@ -1,5 +1,6 @@
-# Direct runtime dependencies. Security floors are applied automatically.
-# This is a candidate manifest, not an exact resolver-verified release lock.
+# Direct runtime dependency ranges for development and separately qualified platforms.
+# Linux x86_64 / Python 3.12 release installs should prefer the hash-locked
+# RottenLabz_Herald_v1.0_Linux_Py312.lock.txt file with --require-hashes.
 -c constraints-security.txt
 discord.py>=2.7.1,<3
 python-dotenv>=1.2.2,<2

@@ -139,6 +139,27 @@ class SourceExportTests(unittest.TestCase):
                 self.approve(self.reviewed_names)
                 self.commit()
 
+    def test_exact_reviewed_logo_binary_asset_exports_and_tampering_refuses(self):
+        logo_name = "RottenLabz_Herald_Logo.png"
+        real_logo = Path(__file__).resolve().parents[1] / logo_name
+        logo_bytes = real_logo.read_bytes()
+        export.scan_content(logo_name, logo_bytes)
+
+        self.write(logo_name, logo_bytes)
+        self.approve(self.reviewed_names | {logo_name})
+        self.commit()
+        export.export_source(self.root, self.output)
+        with tarfile.open(self.output) as archive:
+            self.assertEqual(archive.extractfile(logo_name).read(), logo_bytes)
+
+        self.output.unlink()
+        Path(str(self.output) + ".sha256").unlink()
+        self.write(logo_name, logo_bytes + b"tampered")
+        self.commit()
+        with self.assertRaisesRegex(export.ExportError, "binary asset identity mismatch"):
+            export.export_source(self.root, self.output)
+        self.assertFalse(self.output.exists())
+
     def test_sqlite_header_refused_regardless_approved_filename(self):
         for index, signature in enumerate(export.DB_SIGNATURES):
             with self.subTest(signature=index):

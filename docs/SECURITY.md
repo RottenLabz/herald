@@ -22,7 +22,7 @@ If a Discord token is exposed, regenerate it in the Developer Portal, replace it
 
 ## Reviewed committed-source exporter
 
-`approved-source-manifest.txt` is an explicit reviewed file list, not a filename glob. When public source files are added/removed, review the actual content and update this manifest in the same change. Never regenerate it blindly from an arbitrary private checkout.
+`approved-source-manifest.txt` is an explicit reviewed file list, not a filename glob. When public source files are added/removed, review the actual content and update this manifest in the same change. The only reviewed binary exception in v1.0.0 is `RottenLabz_Herald_Logo.png`; `source_export.py` accepts it only when the filename, PNG signature, byte length and SHA-256 all match the hard-coded reviewed identity. Any logo byte change therefore requires an explicit source-exporter and manifest review as well as the branding review in [BRANDING.md](../BRANDING.md). Never regenerate it blindly from an arbitrary private checkout.
 
 The exporter requires Git and Python 3.12+. It reads regular committed Git blobs from `HEAD`; tracked index/working-tree changes cause failure. Untracked files are omitted. Tracked real environment files, configured runtime/private paths, databases and SQLite sidecars cause failure even if listed in the manifest; they are never silently hidden. Unexpected tracked source also causes failure. The selected archive must contain the exact complete approved manifest, including public `.env.example`. An approved source colliding with an actual configured runtime/private path causes failure. Symlinks, submodules, unsafe paths, binary source and excessive files fail closed.
 

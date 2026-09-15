@@ -1,7 +1,7 @@
-# Minimums required by the supplied 2026-09-14 security audit.
-# Compatibility must pass the clean Linux/Python resolver + full release gates.
-# The build environment could not retrieve these packages; no exact lock or
-# successful clean compatibility resolution is claimed. Do not relax on failure.
+# Minimum security floors established by the 2026-09-14 dependency audit.
+# The v1.0.0 foundation was resolver/test qualified on Windows 11/Python 3.12
+# and clean Linux x86_64/Python 3.12 without weakening these constraints.
+# Exact Linux release closure: RottenLabz_Herald_v1.0_Linux_Py312.lock.txt
 aiohttp>=3.14.3,<4
 urllib3>=2.7.0,<3
 idna>=3.15,<4

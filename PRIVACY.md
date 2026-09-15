@@ -1,6 +1,6 @@
 # RottenLabz Herald privacy and data handling
 
-This describes the public v0.2.0 self-hosted application. It is a starting notice for operators to adapt, not an assertion about every private installation or a compliance guarantee.
+This describes the public v1.0.0 self-hosted application. It is a starting notice for operators to adapt, not an assertion about every private installation or a compliance guarantee.
 
 ## Who operates an instance
 

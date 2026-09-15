@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.0 - Unreleased
+## v1.0.0 - 2026-09-15
 
 ### Added
 
@@ -28,7 +28,7 @@
 - Qualified the foundation on Windows 11 / Python 3.12 with real discord.py and on clean Linux / Python 3.12.
 - Qualified a separate clean Linux install from the exact `--require-hashes` lock.
 - Ran `pip check`, dependency vulnerability audits and CycloneDX SBOM generation for the qualified runtime.
-- Final publication still requires the post-identity full test/export gates, annotated tag review and explicit release authorization.
+- Completed the post-identity full test/export gates, signed tag review and public v1.0.0 release.
 
 ## v0.1.1 - 2026-07-14
 
@@ -58,4 +58,4 @@
 
 ### Planned separately
 
-- Slash commands and command-handler refactoring were intentionally deferred from v0.1.1 and are delivered by the v1.0.0 release candidate above.
+- Slash commands and command-handler refactoring were intentionally deferred from v0.1.1 and are delivered by v1.0.0 above.

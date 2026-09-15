@@ -125,4 +125,4 @@ Owner DM syntax is `herald resolve <id> posted <message_id>`, `herald resolve <i
 
 Optional Unicode/custom emoji values include `HERALD_EMOJI_HERALD` (default 🎺), `HERALD_EMOJI_WELCOME` (default 👋) and `HERALD_EMOJI_FREE_GAME`. Welcome messages use the distinct `welcome` slot: `HERALD_EMOJI_WELCOME=👋` is independent of the general Herald emoji. Preserve an existing private welcome value during migration. Historical GPU/security emoji keys can remain for rendering old categories, without reinstating removed providers. Keep private custom emoji and server-specific IDs in private configuration.
 
-See [PRIVATE_VPS_MIGRATION_NOTES.md](../PRIVATE_VPS_MIGRATION_NOTES.md) for removed/deprecated v0.1.1 provider keys.
+Older v0.1.1 provider-specific settings are not automatically recreated in v1.0.0; review the current configuration options before upgrading an existing deployment.

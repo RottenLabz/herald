@@ -20,7 +20,6 @@ instance_lock.py
 LICENSE
 presentation.py
 PRIVACY.md
-PRIVATE_VPS_MIGRATION_NOTES.md
 provider_runtime.py
 providers/__init__.py
 providers/common.py

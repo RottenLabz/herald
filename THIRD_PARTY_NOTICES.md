@@ -33,6 +33,6 @@ RottenLabz Herald is not affiliated with, sponsored by or endorsed by Discord or
 
 ## Release review
 
-Run the inventory, security and SBOM gates in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md). The v1.0.0 foundation was resolved and tested on Windows/Python 3.12 and clean Linux/Python 3.12, including a hash-enforced Linux lock, current vulnerability audits and CycloneDX SBOM generation. Those results are time-sensitive and must be repeated for the final release candidate. Do not label this document an exhaustive legal or licence opinion.
+Run the inventory, security and SBOM gates in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md). The v1.0.0 foundation was resolved and tested on Windows/Python 3.12 and clean Linux/Python 3.12, including a hash-enforced Linux lock, current vulnerability audits and CycloneDX SBOM generation. Those results are time-sensitive and should be repeated for future releases. Do not label this document an exhaustive legal or licence opinion.
 
 The RottenLabz Herald logo is first-party project branding rather than a third-party dependency and is not licensed under the software MIT licence; see [BRANDING.md](BRANDING.md).

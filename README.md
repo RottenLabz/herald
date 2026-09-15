@@ -4,7 +4,7 @@
 
 # RottenLabz Herald
 
-RottenLabz Herald is a self-hosted Discord announcement bot. The bot's everyday name is **Herald**. This tree is the **v1.0.0 release candidate**; it does not claim that a public tag or hosted release exists until the publication gates in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) are completed.
+RottenLabz Herald is a self-hosted Discord announcement bot. The bot's everyday name is **Herald**. This tree contains the released **RottenLabz Herald v1.0.0** foundation and subsequent maintenance changes. Release work follows [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
 
 Herald discovers announcements, records them in SQLite, and sends them through a shared delivery queue. Each source chooses `automatic` delivery or owner `review`. Material revisions invalidate a review approval; durable claims prevent competing commands from sending the same item concurrently. A send with an unknown outcome becomes `uncertain` and needs deliberate owner resolution. Delivery is not guaranteed exactly once.
 
@@ -54,7 +54,7 @@ The hardened service layout separates root-owned application code under `/opt/ro
 
 `backup-noenv.sh` exports **reviewed committed source only**. It requires a clean tracked tree and the explicit `approved-source-manifest.txt`, runs the built-in secret checks, then checks the exact complete manifest and every archive member against committed bytes. Tracked runtime/private material or a configured runtime path colliding with approved source causes failure. The single reviewed logo PNG is accepted only by its exact filename, format, size and SHA-256 identity. Untracked and uncommitted private changes are not included. This exporter is not a database or complete private deployment backup. See [security and export notes](docs/SECURITY.md).
 
-Existing Herald Angel v0.1.1 installations must follow [private migration notes](PRIVATE_VPS_MIGRATION_NOTES.md). Historical queue categories and audit rows are preserved; removed provider integrations are not automatically recreated.
+Existing pre-v1 installations should be backed up and upgraded deliberately. Historical queue/audit data may require migration, and integrations removed from the public core are not automatically recreated.
 
 ## Project authority, licence and branding
 

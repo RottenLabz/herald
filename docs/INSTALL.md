@@ -1,6 +1,6 @@
 # Install RottenLabz Herald
 
-These instructions describe a **new, operator-approved Linux installation**, not an in-place upgrade of an existing private service. Existing deployments must first use [PRIVATE_VPS_MIGRATION_NOTES.md](../PRIVATE_VPS_MIGRATION_NOTES.md). Decide and approve the new service account and directories before creating them. Reuse existing suitable paths where practical.
+These instructions describe a **new Linux installation**. Existing deployments should make verified backups and review configuration/database migration requirements before upgrading in place. Decide the service account and directories before creating them, and reuse suitable existing paths where practical.
 
 The primary v1.0.0 deployment target is a supported Linux x86_64 release with **Python 3.12**, Git, and the hash-locked runtime shipped with this source. Newer Python versions or different platform closures must be qualified separately. A constrained installation that cannot install the reviewed lock must stop; do not relax hashes or security floors to force it through.
 
@@ -38,7 +38,7 @@ python3 -m venv .venv
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The exact lock was generated and independently installed/tested in a clean Python 3.12 Linux environment before the final release-identity patch. The final candidate must repeat the release gates in [RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md), including current vulnerability audit and SBOM generation. Review/create `.venv` only in the designated test/deployment workspace.
+The exact lock was generated and independently installed/tested in a clean Python 3.12 Linux environment before the final release-identity patch. Future releases should repeat the release gates in [RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md), including current vulnerability audit and SBOM generation. Review/create `.venv` only in the designated test/deployment workspace.
 
 ## Protect `.env` before adding secrets
 

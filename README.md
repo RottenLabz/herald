@@ -4,13 +4,13 @@
 
 # RottenLabz Herald
 
-RottenLabz Herald is a self-hosted Discord announcement bot. The bot's everyday name is **Herald**. This tree contains the released **RottenLabz Herald v1.0.0** foundation and subsequent maintenance changes. Release work follows [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
+RottenLabz Herald is a self-hosted Discord announcement bot. The bot's everyday name is **Herald**. This tree contains the **RottenLabz Herald v1.0.1** maintenance release on the stable v1.0.0 foundation. Release work follows [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
 
 Herald discovers announcements, records them in SQLite, and sends them through a shared delivery queue. Each source chooses `automatic` delivery or owner `review`. Material revisions invalidate a review approval; durable claims prevent competing commands from sending the same item concurrently. A send with an unknown outcome becomes `uncertain` and needs deliberate owner resolution. Delivery is not guaranteed exactly once.
 
 ## Included features
 
-- GamerPower free-game alerts, with a separate clickable attribution backlink and giveaway link.
+- GamerPower free-game alerts, API-first by default, with an opt-in RSS fallback plus a separate clickable attribution backlink and giveaway link.
 - Configurable RSS/Atom sources with channel IDs, optional harmless subscription-role IDs, tags, attribution and per-source policy.
 - Optional trusted local Python provider extensions, disabled until the operator configures them.
 - `/herald` slash commands, ephemeral owner review controls, and owner DM recovery commands.
@@ -21,9 +21,9 @@ GamerPower is the only bundled third-party content integration. Generic feed exa
 
 ## Release target and dependency evidence
 
-The primary v1.0.0 deployment target is **Linux x86_64 with Python 3.12**. `RottenLabz_Herald_v1.0_Linux_Py312.lock.txt` is the exact hash-locked runtime qualified for that target; install it with `--require-hashes`. `requirements.txt` remains the direct-range manifest for development, review, and separately qualified platforms.
+The v1.0 series deployment target is **Linux x86_64 with Python 3.12**. Create a fresh venv, install the hash-pinned `pip-bootstrap.txt`, then install `RottenLabz_Herald_v1.0_Linux_Py312.lock.txt` with `--require-hashes`. The lock is the reviewed exact Herald application closure for that series; each release must repeat the bootstrap, exact-lock and installed-runtime qualification before publication. `requirements.txt` remains the direct-range manifest for development, review, and separately qualified platforms.
 
-The v1.0.0 foundation was also regression-qualified on Windows 11 / Python 3.12 with real `discord.py`. On 14 September 2026 the pre-release foundation completed 185 tests on Windows (four expected platform skips), 185 tests on clean Linux with zero skips, and 185 tests again from the exact hash-locked Linux runtime. `pip check` passed, `pip-audit` reported no known vulnerabilities in both the exact runtime and public requirements at that time, and CycloneDX SBOMs were generated. Vulnerability results are time-sensitive and the final release-identity change must still repeat the final gates before publication.
+The final tagged v1.0.0 release was qualified on Windows 11 / Python 3.12.10 with real `discord.py` 2.7.1 (**186 tests passed**, four expected platform skips) and clean Linux / Python 3.12.14 (**186 tests passed**, zero skips). The exact Linux lock was installed with `--require-hashes`; `pip check` passed, `pip-audit` reported no known vulnerabilities in the qualified exact runtime and public requirements at that time, and CycloneDX SBOM evidence was generated. Those results are historical evidence for v1.0.0; vulnerability, exact-lock, SBOM and source-export gates must be repeated for v1.0.1 before publication.
 
 ## Start here
 
@@ -58,7 +58,7 @@ Existing pre-v1 installations should be backed up and upgraded deliberately. His
 
 ## Project authority, licence and branding
 
-**GitHub is authoritative** for development, issues, pull requests, tags and releases. **Codeberg is a source mirror only.** Operators manage remotes and disable duplicate collaboration surfaces separately. Final repository URLs and the later RottenLabz organisation transfer are operator decisions; none are assumed here.
+**GitHub `RottenLabz/herald` is authoritative** for development, issues, pull requests, tags and releases. **Codeberg `RottenLabz/herald` is a source mirror only.** Operators should verify their configured remotes and disable duplicate collaboration surfaces separately.
 
 Original software source and documentation use the [MIT licence](LICENSE), copyright 2026 RottenLabz. The RottenLabz Herald logo is separately reserved project branding; see [BRANDING.md](BRANDING.md). Also see [privacy](PRIVACY.md), [third-party notices](THIRD_PARTY_NOTICES.md), and [release history](CHANGELOG.md).
 

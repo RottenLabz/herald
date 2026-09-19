@@ -251,6 +251,7 @@ class SlashUxTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_source_rejects_credentials_and_unsafe_schemes(self):
         self.assertIsNone(slash.source_url("https://" + "secret:token@example.com/feed"))
         self.assertIsNone(slash.source_url("javascript:alert(1)"))
+        self.assertIsNone(slash.source_url("ftp://example.com/feed"))
         self.assertEqual(slash.source_url("https://example.com/item"), "https://example.com/item")
 
     async def test_error_handler_does_not_reflect_exception(self):

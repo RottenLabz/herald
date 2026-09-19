@@ -9,6 +9,7 @@ from unittest.mock import patch
 import config
 import provider_runtime
 from providers import common, gamerpower, rss
+from version import VERSION
 
 
 def source(**changes):
@@ -59,6 +60,10 @@ class ProviderBoundaryTests(unittest.TestCase):
         self.assertEqual(session.kwargs["timeout"], (5.0, 5.0))
         self.assertFalse(session.kwargs["allow_redirects"])
         self.assertTrue(session.kwargs["stream"])
+        self.assertEqual(
+            session.kwargs["headers"]["User-Agent"],
+            f"RottenLabz-Herald/{VERSION}",
+        )
 
     def test_one_oversized_decoded_chunk_is_rejected(self):
         response = FakeResponse([b"x" * (common.MAX_BODY_BYTES + 1), b"unused"])
@@ -124,14 +129,16 @@ class ProviderBoundaryTests(unittest.TestCase):
     def test_gamerpower_preserves_claim_and_independent_attribution(self):
         payload = [{"id": 123, "title": "BioShock from Independent Studios", "platforms": "PC,Steam", "description": "Full game",
                     "open_giveaway_url": "https://example.com/claim", "gamerpower_url": "https://www.gamerpower.com/giveaway"}]
-        with patch.object(gamerpower, "fetch_bytes", return_value=json.dumps(payload).encode()):
+        with patch.object(config, "FREE_GAMES_ENABLED", True), \
+             patch.object(gamerpower, "fetch_bytes", return_value=json.dumps(payload).encode()):
             result = gamerpower.fetch_source()
         item = result["items"][0]
         self.assertEqual(item["url"], "https://example.com/claim")
         self.assertEqual(item["attribution_url"], "https://www.gamerpower.com/giveaway")
         self.assertEqual(item["attribution_label"], "GamerPower")
         payload[0]["gamerpower_url"] = "https://example.com/spoof"
-        with patch.object(gamerpower, "fetch_bytes", return_value=json.dumps(payload).encode()):
+        with patch.object(config, "FREE_GAMES_ENABLED", True), \
+             patch.object(gamerpower, "fetch_bytes", return_value=json.dumps(payload).encode()):
             item = gamerpower.fetch_source()["items"][0]
         self.assertEqual(item["attribution_url"], "https://www.gamerpower.com/")
 
@@ -144,13 +151,134 @@ class ProviderBoundaryTests(unittest.TestCase):
         self.assertEqual(common.bounded_identity("<literal-id>"), "<literal-id>")
 
     def test_gamerpower_fallback_preserves_configured_policy_digest(self):
-        configured = dict(gamerpower.configured_source(), policy_digest="a" * 64)
+        configured = dict(
+            gamerpower.configured_source(),
+            enabled=True,
+            policy_digest="a" * 64,
+        )
         parsed = {"version": "rss20", "entries": [{"title": "Game", "link": "https://example.com/claim"}]}
-        with patch.object(gamerpower, "fetch_bytes", side_effect=ValueError("api failure")), patch.object(rss, "fetch_bytes", return_value=b"bounded"), patch.object(rss, "parse_feed", return_value=parsed):
+        with patch.object(config, "HERALD_GAMERPOWER_RSS_FALLBACK_ENABLED", True), \
+             patch.object(gamerpower, "fetch_bytes", side_effect=ValueError("api failure")), \
+             patch.object(rss, "fetch_bytes", return_value=b"bounded"), \
+             patch.object(rss, "parse_feed", return_value=parsed):
             result = gamerpower.fetch_source(configured)
         self.assertEqual(result["health"]["status"], "degraded")
         self.assertEqual(result["items"][0]["source_policy_digest"], configured["policy_digest"])
         self.assertEqual(result["items"][0]["attribution_url"], "https://www.gamerpower.com/")
+
+    def test_gamerpower_aliases_canonicalize_transport_variants(self):
+        expected = [
+            "https://www.gamerpower.com/mindcop-epic-games-giveaway",
+            "https://www.gamerpower.com/open/mindcop-epic-games-giveaway",
+        ]
+
+        variants = (
+            "http://gamerpower.com/mindcop-epic-games-giveaway",
+            "http://www.gamerpower.com/mindcop-epic-games-giveaway",
+            "https://gamerpower.com/mindcop-epic-games-giveaway",
+            "https://www.gamerpower.com/mindcop-epic-games-giveaway",
+            "https://www.gamerpower.com/open/mindcop-epic-games-giveaway",
+        )
+
+        for value in variants:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    gamerpower.gamerpower_aliases(value),
+                    expected,
+                )
+
+    def test_gamerpower_api_failure_does_not_use_rss_when_fallback_disabled(self):
+        configured = dict(
+            gamerpower.configured_source(),
+            enabled=True,
+        )
+
+        with patch.object(
+            config,
+            "HERALD_GAMERPOWER_RSS_FALLBACK_ENABLED",
+            False,
+        ), patch.object(
+            gamerpower,
+            "fetch_bytes",
+            side_effect=ValueError("api failure"),
+        ), patch.object(
+            rss,
+            "fetch_source",
+        ) as fallback:
+            result = gamerpower.fetch_source(configured)
+
+        fallback.assert_not_called()
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["health"]["status"], "failed")
+        self.assertTrue(
+            result["health"]["error"].startswith(
+                "api_failed_no_rss_fallback:"
+            )
+        )
+
+    def test_gamerpower_opt_in_fallback_canonicalizes_historical_http_url(self):
+        configured = dict(
+            gamerpower.configured_source(),
+            enabled=True,
+            policy_digest="b" * 64,
+        )
+
+        parsed = {
+            "version": "rss20",
+            "entries": [{
+                "title": "Mindcop (Epic Games) Giveaway",
+                "link": (
+                    "http://www.gamerpower.com/"
+                    "mindcop-epic-games-giveaway"
+                ),
+            }],
+        }
+
+        with patch.object(
+            config,
+            "HERALD_GAMERPOWER_RSS_FALLBACK_ENABLED",
+            True,
+        ), patch.object(
+            gamerpower,
+            "fetch_bytes",
+            side_effect=ValueError("api failure"),
+        ), patch.object(
+            rss,
+            "fetch_bytes",
+            return_value=b"bounded",
+        ), patch.object(
+            rss,
+            "parse_feed",
+            return_value=parsed,
+        ):
+            result = gamerpower.fetch_source(configured)
+
+        self.assertEqual(result["health"]["status"], "degraded")
+        self.assertEqual(len(result["items"]), 1)
+
+        item = result["items"][0]
+
+        self.assertEqual(
+            item["url"],
+            "https://www.gamerpower.com/"
+            "mindcop-epic-games-giveaway",
+        )
+        self.assertEqual(
+            item["dedupe_urls"],
+            [
+                "https://www.gamerpower.com/"
+                "mindcop-epic-games-giveaway",
+                "https://www.gamerpower.com/open/"
+                "mindcop-epic-games-giveaway",
+            ],
+        )
+        self.assertTrue(
+            item["preserve_existing_on_dedupe_match"]
+        )
+        self.assertEqual(
+            item["source_policy_digest"],
+            configured["policy_digest"],
+        )
 
     def test_configured_policy_digest_changes_on_every_source_change(self):
         descriptor = source(provider_id="local", _plugin={"path": "/private/existing", "module": "synthetic"})
@@ -177,6 +305,34 @@ class ProviderBoundaryTests(unittest.TestCase):
         with patch.object(config, "HERALD_PRIVATE_PROVIDERS", [invalid]):
             with self.assertRaises(ValueError):
                 provider_runtime._private_descriptors()
+
+    def test_private_provider_symlink_escape_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "allowed"
+            root.mkdir()
+
+            outside = base / "outside.py"
+            outside.write_text(
+                "def fetch_items():\n"
+                "    return []\n",
+                encoding="utf-8",
+            )
+
+            link = root / "escape.py"
+
+            try:
+                link.symlink_to(outside)
+            except OSError as exc:
+                self.skipTest(f"Symlink creation unavailable: {exc}")
+
+            descriptor = {
+                "path": str(root),
+                "module": "escape",
+            }
+
+            with self.assertRaises(ValueError):
+                provider_runtime._load_local_module(descriptor)
 
     def test_private_error_text_is_not_disclosed(self):
         self.assertNotIn("secret", common.error_code(ValueError("https://secret@example.com/private")))
@@ -224,6 +380,60 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["items"][0]["destination_channel_id"], 123)
             self.assertEqual(worker.last_health, [])
             self.assertFalse(Path(temporary, "herald.db").exists())
+
+    async def test_worker_output_over_one_mib_is_rejected(self):
+        class FakeStdin:
+            def __init__(self):
+                self.closed = False
+                self.written = bytearray()
+
+            def write(self, data):
+                self.written.extend(data)
+
+            async def drain(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
+        class FakeStdout:
+            def __init__(self, total):
+                self.remaining = total
+
+            async def read(self, size):
+                if self.remaining <= 0:
+                    return b""
+                count = min(size, self.remaining)
+                self.remaining -= count
+                return b"x" * count
+
+        class FakeProcess:
+            def __init__(self):
+                self.stdin = FakeStdin()
+                self.stdout = FakeStdout(
+                    provider_runtime.MAX_WORKER_OUTPUT + 1
+                )
+                self.returncode = 0
+                self.wait_called = False
+
+            async def wait(self):
+                self.wait_called = True
+                return self.returncode
+
+        worker = provider_runtime.DiscoveryWorker()
+        process = FakeProcess()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "^worker_output_limit_exceeded$",
+        ):
+            await worker._exchange(
+                process,
+                {"source": {"id": "oversized-test"}},
+            )
+
+        self.assertTrue(process.stdin.closed)
+        self.assertFalse(process.wait_called)
 
     async def test_busy_discovery_does_not_accumulate_workers(self):
         worker = provider_runtime.DiscoveryWorker()

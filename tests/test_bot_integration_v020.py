@@ -54,6 +54,56 @@ class BotIntegrationTests(unittest.IsolatedAsyncioTestCase):
         coordinator.start()
         self.addCleanup(coordinator.stop)
 
+    def test_safe_http_url_rejects_ftp_scheme(self):
+        self.assertEqual(bot.safe_http_url("ftp://example.com/feed"), "")
+
+    async def test_non_owner_dm_is_ignored_without_persistent_identity_log(self):
+        class FakeDMChannel:
+            def __init__(self):
+                self.send = AsyncMock()
+
+        channel = FakeDMChannel()
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=999, bot=False),
+            guild=None,
+            channel=channel,
+            mentions=[],
+            content="herald status",
+        )
+
+        with patch.object(bot.discord, "DMChannel", FakeDMChannel), \
+             patch.object(bot, "OWNER_ID", 101), \
+             patch.object(bot, "HERALD_DM_COMMANDS_ENABLED", True), \
+             patch.object(bot, "HERALD_REPLY_TO_NON_OWNER_DMS", False), \
+             patch.object(bot, "log_event") as log_event, \
+             patch.object(bot, "handle_owner_command", new=AsyncMock()) as handle_owner:
+            await bot.on_message(message)
+
+        log_event.assert_not_called()
+        channel.send.assert_not_awaited()
+        handle_owner.assert_not_awaited()
+
+    async def test_server_text_commands_disabled_blocks_owner_guild_message(self):
+        channel = Mock(spec=discord.TextChannel)
+        channel.send = AsyncMock()
+
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=101, bot=False),
+            guild=self.guild,
+            channel=channel,
+            mentions=[],
+            content="herald status",
+        )
+
+        with patch.object(bot, "HERALD_SERVER_COMMANDS_ENABLED", False), \
+             patch.object(bot, "handle_owner_command", new=AsyncMock()) as handle_owner, \
+             patch.object(bot, "clean_prompt") as clean_prompt:
+            await bot.on_message(message)
+
+        handle_owner.assert_not_awaited()
+        clean_prompt.assert_not_called()
+        channel.send.assert_not_awaited()
+
     async def test_gamerpower_both_clickable_links_and_safe_mentions(self):
         ok, _ = await bot.post_item_to_discord(self.row)
         self.assertTrue(ok)

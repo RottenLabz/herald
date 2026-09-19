@@ -9,6 +9,9 @@ from urllib.parse import urlsplit
 
 
 from feed_config import FeedConfigError, MAX_URL, validate_url
+from version import VERSION
+
+USER_AGENT = f"RottenLabz-Herald/{VERSION}"
 
 CONNECT_TIMEOUT = 5.0
 READ_TIMEOUT = 5.0
@@ -50,7 +53,7 @@ def fetch_bytes(url: str, *, deadline: float | None = None, session=None) -> byt
     # Streamed iter_content yields decoded bytes, including compressed responses.
     # Parent worker process enforces an absolute deadline over DNS/connect/read/parse.
     with client.get(url, stream=True, timeout=(min(CONNECT_TIMEOUT, remaining), min(READ_TIMEOUT, remaining)),
-                    allow_redirects=False, headers={"User-Agent": "RottenLabz-Herald/1.0.0"}) as response:
+                    allow_redirects=False, headers={"User-Agent": USER_AGENT}) as response:
         if not 200 <= response.status_code < 300:
             raise ProviderBoundaryError(f"http_status_{response.status_code}")
         body = bytearray()
@@ -153,6 +156,16 @@ def normalize_item(item: dict, source: dict) -> dict:
         candidate = safe_url(item.get("attribution_url", ""), optional=True)
         hostname = (urlsplit(candidate).hostname or "").lower()
         attribution_url = candidate if hostname in {"gamerpower.com", "www.gamerpower.com"} else "https://www.gamerpower.com/"
+
+    raw_dedupe_urls = item.get("dedupe_urls") or []
+    if not isinstance(raw_dedupe_urls, (list, tuple)):
+        raise ProviderBoundaryError("invalid_dedupe_urls")
+    dedupe_urls = []
+    for candidate in raw_dedupe_urls[:4]:
+        candidate = safe_url(candidate, optional=True)
+        if candidate and candidate not in dedupe_urls:
+            dedupe_urls.append(candidate)
+
     return {
         "provider_id": source.get("provider_id", "rss"),
         "source_id": source_id,
@@ -169,6 +182,10 @@ def normalize_item(item: dict, source: dict) -> dict:
         "summary": clean_text(item.get("summary"), MAX_SUMMARY),
         "tags": split_tags(split_tags(source.get("tags", [])) + split_tags(item.get("tags", []))),
         "external_id": bounded_identity(item.get("external_id") or url),
+        "dedupe_urls": dedupe_urls,
+        "preserve_existing_on_dedupe_match": bool(
+            item.get("preserve_existing_on_dedupe_match", False)
+        ),
         "published_at": clean_text(item.get("published_at"), 100),
         "image_url": safe_url(item.get("image_url", ""), optional=True),
         "feed_url": safe_url(source.get("url", ""), optional=True),

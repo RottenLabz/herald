@@ -2,13 +2,13 @@
 
 These instructions describe a **new Linux installation**. Existing deployments should make verified backups and review configuration/database migration requirements before upgrading in place. Decide the service account and directories before creating them, and reuse suitable existing paths where practical.
 
-The primary v1.0.0 deployment target is a supported Linux x86_64 release with **Python 3.12**, Git, and the hash-locked runtime shipped with this source. Newer Python versions or different platform closures must be qualified separately. A constrained installation that cannot install the reviewed lock must stop; do not relax hashes or security floors to force it through.
+The v1.0 series deployment target is a supported Linux x86_64 release with **Python 3.12**, Git, and the hash-locked runtime shipped with this source. Each maintenance release must requalify that exact closure before publication. Newer Python versions or different platform closures must be qualified separately. A constrained installation that cannot install the reviewed lock must stop; do not relax hashes or security floors to force it through.
 
 ## Discord application
 
 In the Discord Developer Portal, create/select your application and bot; retain the token privately. Invite it with the `bot` and `applications.commands` scopes. Grant View Channel, Send Messages, Embed Links and Read Message History in destination channels. Grant Manage Roles only when subscription controls are used. Place the bot role above harmless notification roles and below staff roles; do not grant Administrator.
 
-Enable the Members intent for member welcomes/subscription member handling and Message Content intent for the retained text/DM transport as required by your application settings. Run `/herald doctor` in the intended guild after login to check actual channel, role and command-registration state.
+Enable the Members intent for member welcomes/subscription member handling. The privileged Message Content intent is needed only if you deliberately enable legacy target-guild text commands with `HERALD_SERVER_COMMANDS_ENABLED=true`; slash commands and the owner DM recovery path work with that privileged intent disabled. Run `/herald doctor` in the intended guild after login to check actual channel, role and command-registration state.
 
 ## Source and account preparation
 
@@ -27,18 +27,19 @@ Skip account creation if the dedicated account already exists and verify its pur
 
 ## Dependencies
 
-For the supported Linux/Python 3.12 release target, install the reviewed exact lock `RottenLabz_Herald_v1.0_Linux_Py312.lock.txt` with hash enforcement. `requirements.txt` is the direct-range manifest used for development and separately qualified platforms; it is not a substitute for the release lock. Never use the system Python package environment as the application environment.
+For the supported Linux/Python 3.12 release target, first replace the venv-bundled installer with the hash-pinned version in `pip-bootstrap.txt`, then install the reviewed exact Herald application lock `RottenLabz_Herald_v1.0_Linux_Py312.lock.txt` with hash enforcement. `requirements.txt` is the direct-range manifest used for development and separately qualified platforms; it is not a substitute for either reviewed release file. Never use the system Python package environment as the application environment.
 
 **Linux release/deployment console:**
 
 ```bash
 python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes -r pip-bootstrap.txt
 .venv/bin/python -m pip install --require-hashes -r RottenLabz_Herald_v1.0_Linux_Py312.lock.txt
 .venv/bin/python -m pip check
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The exact lock was generated and independently installed/tested in a clean Python 3.12 Linux environment before the final release-identity patch. Future releases should repeat the release gates in [RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md), including current vulnerability audit and SBOM generation. Review/create `.venv` only in the designated test/deployment workspace.
+For each release, qualify the hash-pinned pip bootstrap and the exact Herald application lock together in a clean Python 3.12 Linux environment. Run the release gates in [RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md), including current vulnerability audits of the installed runtime, exact lock and public requirements plus SBOM generation. Review/create `.venv` only in the designated test/deployment workspace.
 
 ## Protect `.env` before adding secrets
 

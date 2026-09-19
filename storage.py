@@ -550,24 +550,65 @@ def upsert_item(item: dict, status: str | None = None) -> dict:
     with connect() as conn:
         _begin_write(conn)
         existing = None
+        match_kind = ""
+
         if material["external_id"]:
             existing = conn.execute(
                 "SELECT * FROM herald_items WHERE provider_id=? AND source_id=? AND category=? AND external_id=? LIMIT 1",
                 (material["provider_id"], material["source_id"], material["category"], material["external_id"]),
             ).fetchone()
-        # A source's distinct external IDs are authoritative (e.g. recurring broadcasts).
-        # URL fallback is restricted to the same provider/source/category and a missing ID.
+            if existing is not None:
+                match_kind = "external_id"
+
+        # Some providers expose one logical item through multiple transports whose
+        # identifiers differ. Only explicit, bounded provider aliases may bridge
+        # those identities; ordinary distinct external IDs remain authoritative.
+        dedupe_urls = tuple(dict.fromkeys(
+            str(value).strip()
+            for value in (item.get("dedupe_urls") or [])[:4]
+            if str(value).strip()
+        ))
+        if existing is None and dedupe_urls:
+            placeholders = ",".join("?" for _ in dedupe_urls)
+            existing = conn.execute(
+                f"""SELECT * FROM herald_items
+                WHERE provider_id=? AND source_id=? AND category=?
+                AND (url IN ({placeholders}) OR attribution_url IN ({placeholders}))
+                ORDER BY id LIMIT 1""",
+                (
+                    material["provider_id"],
+                    material["source_id"],
+                    material["category"],
+                    *dedupe_urls,
+                    *dedupe_urls,
+                ),
+            ).fetchone()
+            if existing is not None:
+                match_kind = "dedupe_url"
+
+        # The ordinary URL fallback remains deliberately narrow. Twitch and other
+        # sources may legitimately reuse one URL for distinct explicit event IDs.
         if existing is None and item.get("dedupe_by_url", True):
             existing = conn.execute(
                 """SELECT * FROM herald_items WHERE provider_id=? AND source_id=? AND category=? AND url=?
                 AND (external_id='' OR ?='') ORDER BY id LIMIT 1""",
                 (material["provider_id"], material["source_id"], material["category"], material["url"], material["external_id"]),
             ).fetchone()
+            if existing is not None:
+                match_kind = "url_missing_id"
+
         if existing is not None:
             item_id = int(existing["id"])
             old_status = existing["status"]
             result = {"created": False, "id": item_id, "status": old_status,
                       "revision": existing["revision"], "reason": "existing"}
+
+            if (
+                match_kind == "dedupe_url"
+                and item.get("preserve_existing_on_dedupe_match", False)
+            ):
+                result["reason"] = "existing_preferred"
+                return result
             if old_status in FROZEN_STATUSES:
                 result["reason"] = "frozen" if existing["content_digest"] != digest else "existing"
                 return result

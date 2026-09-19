@@ -87,6 +87,10 @@ if FREE_GAMES_DELIVERY_MODE not in {"automatic", "review"}:
     raise ValueError("FREE_GAMES_DELIVERY_MODE must be automatic or review")
 GAMERPOWER_API_URL = "https://www.gamerpower.com/api/giveaways"
 GAMERPOWER_RSS_URL = "https://www.gamerpower.com/rss/giveaways"
+HERALD_GAMERPOWER_RSS_FALLBACK_ENABLED = env_bool(
+    "HERALD_GAMERPOWER_RSS_FALLBACK_ENABLED",
+    False,
+)
 HERALD_FREE_GAME_STRICT_FILTER = env_bool("HERALD_FREE_GAME_STRICT_FILTER", True)
 
 HERALD_COMMAND_SCOPE = env_str("HERALD_COMMAND_SCOPE", "guild")

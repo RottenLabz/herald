@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.0.1 - 2026-09-19
+
+### Fixed
+
+- Prevented duplicate GamerPower announcements when the API and RSS transports describe the same giveaway with different identities. GamerPower URL aliases now reconcile HTTP/HTTPS and `www`/non-`www` forms while preserving the numeric API identity, richer API content and any existing posted Discord receipt.
+- The privileged Discord Message Content intent is now requested only when legacy target-guild text commands are explicitly enabled.
+- Rejected non-owner DMs no longer create a persistent local event containing the sender identity solely because they contacted Herald.
+
+### Changed
+
+- GamerPower remains API-first. A valid empty API result is treated as a successful observation; RSS fallback is disabled by default and can be enabled explicitly with `HERALD_GAMERPOWER_RSS_FALLBACK_ENABLED=true`.
+- Added bounded, provider-supplied deduplication aliases so transport-specific identities can converge when a provider explicitly supplies aliases; ordinary sources that do not opt into aliases retain explicit external-ID identity.
+- Added regression coverage for real FTP URL rejection, audit-chain tampering, non-owner DM handling, disabled server-text commands, trusted local-provider symlink escape, oversized worker output and GamerPower API/RSS identity convergence.
+- Added a hash-pinned `pip-bootstrap.txt` for the supported Linux release path so the venv-bundled installer is upgraded before the exact Herald application lock is installed.
+- Clarified the separate RottenLabz Herald branding permission: deployments using the official project name or logo as branding must provide a reasonably visible link to the authoritative GitHub repository; this does not alter the MIT licence for the software.
+
 ## v1.0.0 - 2026-09-15
 
 ### Added

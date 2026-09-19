@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from urllib.parse import urlsplit
 
 from providers.common import (MAX_ENTRIES, OPERATION_TIMEOUT, clean_text, error_code,
                               fetch_bytes, health, normalize_item, split_tags)
@@ -13,6 +14,41 @@ MOBILE_KEYWORDS = ("android", "ios", "iphone", "ipad", "mobile", "google play", 
 GIVEAWAY_NOISE_KEYWORDS = ("credits", "currency", "coins", "gems", "gift pack", "starter pack",
                          "weapon skin", "skin giveaway", "cosmetic", "booster", "loot", "playtest",
                          "closed beta", "beta key", "anniversary weapon", "bundle key giveaway")
+
+
+def gamerpower_aliases(*values) -> list[str]:
+    """Canonical aliases for one GamerPower giveaway across API/RSS transports."""
+    aliases = []
+
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+
+        try:
+            parts = urlsplit(text)
+        except ValueError:
+            continue
+
+        if (parts.hostname or "").lower() not in {"gamerpower.com", "www.gamerpower.com"}:
+            continue
+
+        path = parts.path or "/"
+
+        if path.startswith("/open/"):
+            path = "/" + path[len("/open/"):].lstrip("/")
+
+        if path == "/":
+            continue
+
+        canonical = "https://www.gamerpower.com" + path
+        claim = "https://www.gamerpower.com/open/" + path.lstrip("/")
+
+        for alias in (canonical, claim):
+            if alias not in aliases:
+                aliases.append(alias)
+
+    return aliases[:4]
 
 
 def configured_source() -> dict:
@@ -70,7 +106,12 @@ def fetch_api_result(source: dict, *, deadline=None) -> dict:
                    "url": game.get("open_giveaway_url") or game.get("gamerpower_url"),
                    "attribution_url": game.get("gamerpower_url", ""),
                    "summary": clean_text(game.get("description"), 1000) + " " + clean_text(game.get("instructions"), 400),
-                   "external_id": game.get("id"), "tags": split_tags(game.get("platforms")),
+                   "external_id": game.get("id"),
+                   "dedupe_urls": gamerpower_aliases(
+                       game.get("open_giveaway_url"),
+                       game.get("gamerpower_url"),
+                   ),
+                   "tags": split_tags(game.get("platforms")),
                    "published_at": game.get("published_date") or game.get("created_at") or "",
                    "image_url": game.get("thumbnail") or game.get("image") or ""}
             if is_mobile_item(raw) or is_noisy_giveaway_item(raw):
@@ -98,10 +139,38 @@ def fetch_source(source: dict | None = None) -> dict:
         api_error = result["health"]["error"]
     except Exception as exc:
         api_error = error_code(exc)
+
+    if not config.HERALD_GAMERPOWER_RSS_FALLBACK_ENABLED:
+        return {
+            "items": [],
+            "health": health(
+                source,
+                "failed",
+                error="api_failed_no_rss_fallback:" + api_error,
+            ),
+        }
+
     fallback = dict(source, url=config.GAMERPOWER_RSS_URL)
     result = rss.fetch_source(fallback, deadline=deadline)
     if result["health"]["status"] in {"healthy", "empty", "degraded"}:
-        result["items"] = [item for item in result["items"] if not is_mobile_item(item) and not is_noisy_giveaway_item(item)]
+        filtered = []
+        prefix = "https://www.gamerpower.com/"
+        for item in result["items"]:
+            if is_mobile_item(item) or is_noisy_giveaway_item(item):
+                continue
+            item = dict(item)
+            aliases = gamerpower_aliases(
+                item.get("url"),
+                item.get("attribution_url"),
+            )
+            if aliases:
+                # RSS uses the canonical GamerPower page; API keeps the /open/
+                # claim URL. Both identities remain explicit aliases.
+                item["url"] = aliases[0]
+            item["dedupe_urls"] = aliases
+            item["preserve_existing_on_dedupe_match"] = True
+            filtered.append(item)
+        result["items"] = filtered
         result["health"] = health(source, "degraded", len(result["items"]), "api_failed_rss_fallback:" + api_error)
     else:
         result["health"] = health(source, "failed", error="api_and_rss_failed:" + api_error)

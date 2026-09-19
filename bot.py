@@ -79,7 +79,7 @@ from watchers import (
 
 
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = HERALD_SERVER_COMMANDS_ENABLED
 intents.members = True
 
 class HeraldClient(discord.Client):
@@ -1076,12 +1076,8 @@ async def on_message(message: discord.Message):
             return
 
         if not is_owner(message.author):
-            log_event(
-                "non_owner_dm_ignored",
-                user_id=str(message.author.id),
-                detail=f"DM ignored from {message.author}",
-            )
-
+            # Reject silently by default without permanently recording the
+            # sender's identity merely because they contacted the bot.
             if HERALD_REPLY_TO_NON_OWNER_DMS:
                 await message.channel.send(
                     "Herald is an announcement bot and does not accept DMs."

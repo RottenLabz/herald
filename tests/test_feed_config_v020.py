@@ -32,6 +32,10 @@ class FeedConfigTests(unittest.TestCase):
     def test_missing_file_has_no_enabled_feeds(self):
         self.assertEqual(feeds.list_feeds(self.path), [])
 
+    def test_validate_url_rejects_ftp_scheme(self):
+        with self.assertRaises(feeds.FeedConfigError):
+            feeds.validate_url("ftp://example.com/feed")
+
     def test_validation_rejects_unknown_version_and_duplicate_ids(self):
         for invalid in ({"version": True, "feeds": []}, {"version": 2, "feeds": []},
                         {"version": 1, "feeds": [example_feed(), example_feed()]},

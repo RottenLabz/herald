@@ -1,6 +1,6 @@
 # RottenLabz Herald privacy and data handling
 
-This describes the public v1.0.0 self-hosted application. It is a starting notice for operators to adapt, not an assertion about every private installation or a compliance guarantee.
+This describes the public v1.0.1 self-hosted application. It is a starting notice for operators to adapt, not an assertion about every private installation or a compliance guarantee.
 
 ## Who operates an instance
 
@@ -10,9 +10,9 @@ The project does not sell Discord, provider API or user data. The public core do
 
 ## Data processed and stored
 
-Herald receives Discord account/member, guild, channel, message and role identifiers as needed to authorize owner commands, select destinations, welcome members, assign/remove harmless subscription roles and post announcements. It processes the owner command/interaction content needed to perform a requested action. Roles and published messages also remain in Discord's systems.
+Herald receives Discord account/member, guild, channel, message and role identifiers as needed to authorize owner commands, select destinations, welcome members, assign/remove harmless subscription roles and post announcements. It processes the owner command/interaction content needed to perform a requested action. Legacy target-guild text commands are disabled by default; while they remain disabled, the public core does not request Discord's privileged Message Content intent. The owner DM recovery path and slash commands remain available without enabling that privileged intent. Roles and published messages also remain in Discord's systems.
 
-The local event table can record event type, guild/channel/user IDs, timestamps and event details. Queue records store source identity, provider external IDs, category, title, canonical URLs, summary, tags, presentation dates and image/attribution references, together with state, revision/digest, approvals, delivery attempts/claims, errors and posted Discord message IDs. Audit records include actions, actors, timestamps, item references, state changes, payloads and hash-chain fields. Historical v0.1.1 rows may retain data from removed integrations.
+The local event table can record event type, guild/channel/user IDs, timestamps and event details. Rejected non-owner DMs do not create a persistent event containing the sender identity solely because they contacted the public v1.0.1 bot; enabling the optional rejection reply does not grant command access. Queue records store source identity, provider external IDs, category, title, canonical URLs, summary, tags, presentation dates and image/attribution references, together with state, revision/digest, approvals, delivery attempts/claims, errors and posted Discord message IDs. Audit records include actions, actors, timestamps, item references, state changes, payloads and hash-chain fields. Historical v0.1.1 rows may retain data from removed integrations.
 
 Provider/feed configuration contains URLs, destinations, role IDs and source policy. Some URLs may themselves contain private information. Credentials belong in protected runtime configuration, and operators must also treat custom feed/plugin configuration as private. Status/doctor output is intended to be sanitized; review logs and any artifact before sharing it publicly. A privately marked source hides its URL from shareable diagnostics; this is not encryption of local data.
 

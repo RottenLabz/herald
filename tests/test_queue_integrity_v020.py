@@ -35,6 +35,142 @@ class QueueIntegrityTests(unittest.TestCase):
     def create(self, **changes):
         return storage.upsert_item(item(**changes))["id"]
 
+    def gamerpower_transport_items(self):
+        canonical = (
+            "https://www.gamerpower.com/"
+            "mindcop-epic-games-giveaway"
+        )
+        claim = (
+            "https://www.gamerpower.com/open/"
+            "mindcop-epic-games-giveaway"
+        )
+        aliases = [canonical, claim]
+
+        common = {
+            "source_id": "gamerpower-test",
+            "provider_id": "local",
+            "category": "free_games",
+            "title": "Mindcop (Epic Games) Giveaway",
+            "delivery_mode": "automatic",
+            "role_id": None,
+            "attribution_label": "GamerPower",
+            "attribution_url": canonical,
+        }
+
+        api = item(
+            **common,
+            source="GamerPower API",
+            url=claim,
+            external_id="3781",
+            summary="Rich API description Rich API instructions",
+            image_url="https://www.gamerpower.com/offers/1/test.jpg",
+            dedupe_urls=aliases,
+        )
+
+        rss = item(
+            **common,
+            source="GamerPower RSS",
+            url=canonical,
+            external_id=(
+                "http://www.gamerpower.com/"
+                "mindcop-epic-games-giveaway"
+            ),
+            summary="Lower fidelity RSS summary",
+            image_url="",
+            dedupe_urls=aliases,
+            preserve_existing_on_dedupe_match=True,
+        )
+
+        return api, rss
+
+    def test_gamerpower_api_then_historical_rss_stays_one_rich_row(self):
+        api, rss = self.gamerpower_transport_items()
+
+        first = storage.upsert_item(api, status="pending")
+        second = storage.upsert_item(rss, status="pending")
+
+        self.assertEqual(first["id"], second["id"])
+        self.assertFalse(second["created"])
+        self.assertEqual(second["reason"], "existing_preferred")
+
+        row = storage.get_item_by_id(first["id"])
+
+        self.assertEqual(row["revision"], 1)
+        self.assertEqual(row["external_id"], "3781")
+        self.assertEqual(row["url"], api["url"])
+        self.assertEqual(row["summary"], api["summary"])
+        self.assertEqual(row["image_url"], api["image_url"])
+
+        with storage.connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM herald_items"
+            ).fetchone()[0]
+
+        self.assertEqual(count, 1)
+
+    def test_gamerpower_historical_rss_then_api_enriches_same_row(self):
+        api, rss = self.gamerpower_transport_items()
+
+        first = storage.upsert_item(rss, status="pending")
+        second = storage.upsert_item(api, status="pending")
+
+        self.assertEqual(first["id"], second["id"])
+        self.assertFalse(second["created"])
+        self.assertEqual(second["reason"], "revised")
+
+        row = storage.get_item_by_id(first["id"])
+
+        self.assertEqual(row["revision"], 2)
+        self.assertEqual(row["external_id"], "3781")
+        self.assertEqual(row["url"], api["url"])
+        self.assertEqual(row["summary"], api["summary"])
+        self.assertEqual(row["image_url"], api["image_url"])
+        self.assertEqual(row["status"], "pending")
+
+        with storage.connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM herald_items"
+            ).fetchone()[0]
+
+        self.assertEqual(count, 1)
+
+    def test_gamerpower_posted_api_then_rss_preserves_receipt_and_one_row(self):
+        api, rss = self.gamerpower_transport_items()
+
+        first = storage.upsert_item(api, status="pending")
+        claim = storage.claim_item(first["id"])
+
+        self.assertIsNotNone(claim)
+        self.assertTrue(
+            storage.mark_item_posted(
+                first["id"],
+                "789",
+                claim_token=claim["claim_token"],
+                revision=1,
+            )
+        )
+
+        before = storage.get_item_by_id(first["id"])
+        second = storage.upsert_item(rss, status="pending")
+        after = storage.get_item_by_id(first["id"])
+
+        self.assertEqual(first["id"], second["id"])
+        self.assertFalse(second["created"])
+        self.assertEqual(second["reason"], "existing_preferred")
+        self.assertEqual(after, before)
+        self.assertEqual(after["status"], "posted")
+        self.assertEqual(after["revision"], 1)
+        self.assertEqual(after["discord_message_id"], "789")
+        self.assertEqual(after["external_id"], "3781")
+        self.assertEqual(after["image_url"], api["image_url"])
+
+        with storage.connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM herald_items"
+            ).fetchone()[0]
+
+        self.assertEqual(count, 1)
+
     def test_review_approval_bound_to_all_material_fields(self):
         replacements = {
             "title": "Changed title", "url": "https://example.com/changed", "summary": "Changed",

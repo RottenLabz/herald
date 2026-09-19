@@ -1,4 +1,4 @@
-# Explicit reviewed public-source allowlist for RottenLabz Herald v1.0.0.
+# Explicit reviewed public-source allowlist for RottenLabz Herald v1.0.1.
 # Review content before adding a path. Never bulk-generate from a private tree.
 .env.example
 .gitattributes
@@ -18,6 +18,7 @@ docs/SECURITY.md
 feed_config.py
 instance_lock.py
 LICENSE
+pip-bootstrap.txt
 presentation.py
 PRIVACY.md
 provider_runtime.py

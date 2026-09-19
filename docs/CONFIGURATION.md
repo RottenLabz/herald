@@ -14,8 +14,8 @@ Systemd supplies environment values from `/etc/rottenlabz-herald/.env` in the ha
 | `HERALD_COMMAND_SCOPE` | `guild` (default) or `global`; global registration does not relax guild/owner authorization. |
 | `HERALD_BUILD_ID` | Optional operator-supplied commit/build label, displayed without executing Git. |
 | `HERALD_DM_COMMANDS_ENABLED` | `true`; owner DM recovery transport. |
-| `HERALD_SERVER_COMMANDS_ENABLED` | `false`; legacy owner-only target-guild text transport. |
-| `HERALD_REPLY_TO_NON_OWNER_DMS` | `false`; controls replies, never grants command access. |
+| `HERALD_SERVER_COMMANDS_ENABLED` | `false`; legacy owner-only target-guild text transport. When false, Herald does not request the privileged Message Content intent. |
+| `HERALD_REPLY_TO_NON_OWNER_DMS` | `false`; controls replies, never grants command access. Rejected non-owner DMs are not persistently logged solely for the rejection. |
 | `HERALD_OWNER_ONLY` | Deprecated compatibility setting. It cannot disable owner authorization, including when explicitly false. |
 | `HERALD_DB_PATH` | SQLite path; development default `./data/herald.db`; service example uses `/var/lib/rottenlabz-herald/herald.db`. |
 | `HERALD_FEED_CONFIG_PATH` | Writable JSON source config; development default `./data/feeds.json`; service path `/var/lib/rottenlabz-herald/feeds.json`. |
@@ -30,10 +30,11 @@ FREE_GAMES_ENABLED=true
 FREE_GAMES_CHANNEL_ID=0
 FREE_GAMES_ROLE_ID=0
 FREE_GAMES_DELIVERY_MODE=automatic
+HERALD_GAMERPOWER_RSS_FALLBACK_ENABLED=false
 HERALD_FREE_GAME_STRICT_FILTER=true
 ```
 
-The built-in provider uses fixed official GamerPower endpoints; old `GAMERPOWER_API_URL` and `GAMERPOWER_RSS_URL` overrides are no longer read. Set the destination channel ID. Role ID 0 means no subscription/ping role. Each GamerPower-derived alert carries a separate clickable GamerPower backlink as well as its valid giveaway link. An `automatic` source still enters SQLite and the shared delivery coordinator; it never sends directly from a provider.
+The built-in provider uses fixed official GamerPower endpoints; old `GAMERPOWER_API_URL` and `GAMERPOWER_RSS_URL` overrides are no longer read. The API is primary. A valid empty API result is a successful observation and does not trigger RSS. If the API fails, RSS fallback is attempted only when `HERALD_GAMERPOWER_RSS_FALLBACK_ENABLED=true`; the default is `false`. When fallback is enabled, GamerPower HTTP/HTTPS and `www`/non-`www` URL forms are reduced to explicit canonical aliases so API and RSS representations of one giveaway converge on one queue item. Lower-fidelity RSS data does not overwrite a richer alias-matched API row. Ordinary sources retain explicit external-ID identity unless a provider explicitly supplies bounded aliases. Set the destination channel ID. Role ID 0 means no subscription/ping role. Each GamerPower-derived alert carries a separate clickable GamerPower backlink as well as its valid giveaway link. An `automatic` source still enters SQLite and the shared delivery coordinator; it never sends directly from a provider.
 
 ## Generic RSS/Atom configuration
 
@@ -125,4 +126,4 @@ Owner DM syntax is `herald resolve <id> posted <message_id>`, `herald resolve <i
 
 Optional Unicode/custom emoji values include `HERALD_EMOJI_HERALD` (default 🎺), `HERALD_EMOJI_WELCOME` (default 👋) and `HERALD_EMOJI_FREE_GAME`. Welcome messages use the distinct `welcome` slot: `HERALD_EMOJI_WELCOME=👋` is independent of the general Herald emoji. Preserve an existing private welcome value during migration. Historical GPU/security emoji keys can remain for rendering old categories, without reinstating removed providers. Keep private custom emoji and server-specific IDs in private configuration.
 
-Older v0.1.1 provider-specific settings are not automatically recreated in v1.0.0; review the current configuration options before upgrading an existing deployment.
+Older v0.1.1 provider-specific settings are not automatically recreated by the v1.0 series; review the current configuration options before upgrading an existing deployment.
